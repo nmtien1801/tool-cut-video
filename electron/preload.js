@@ -1,6 +1,7 @@
-import { contextBridge, ipcRenderer } from 'electron';
+const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electron', {
+  // Cầu nối chung cho IPC
   ipcRenderer: {
     on: (channel, func) => {
       ipcRenderer.on(channel, (event, ...args) => func(...args));
@@ -11,6 +12,11 @@ contextBridge.exposeInMainWorld('electron', {
     invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
     send: (channel, ...args) => ipcRenderer.send(channel, ...args),
   },
-  getAppVersion: async () => ipcRenderer.invoke('get-app-version'),
-  getAppPath: async () => ipcRenderer.invoke('get-app-path'),
+
+  // Khai báo rõ ràng các hàm để React gọi (Tránh lỗi undefined)
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  getAppPath: () => ipcRenderer.invoke('get-app-path'),
+  
+  // TIẾN PHẢI THÊM DÒNG NÀY VÀO ĐỂ FIX LỖI:
+  getSystemInfo: () => ipcRenderer.invoke('get-os-info'), 
 });

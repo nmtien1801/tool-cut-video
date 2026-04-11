@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import './index.css';
 
 function App() {
   const [info, setInfo] = useState(null);
