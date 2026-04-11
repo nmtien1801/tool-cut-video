@@ -1,0 +1,26 @@
+appId: com.my-tool.app
+productName: My Tool
+directories:
+  buildResources: assets
+  output: release
+files:
+  - dist
+  - electron/main.js
+  - electron/preload.js
+  - package.json
+win:
+  target:
+    - nsis
+    - portable
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+linux:
+  target:
+    - AppImage
+mac:
+  target:
+    - dmg
+    - zip
