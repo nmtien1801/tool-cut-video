@@ -31,14 +31,21 @@
     "directories": {
       "output": "release"
     },
-    "asar": true
+    "asar": true,
+    "extraResources": [
+      {
+        "from": "resources/yt-dlp.exe",
+        "to": "yt-dlp.exe"
+      }
+    ]
   },
   "dependencies": {
     "@distube/ytdl-core": "^4.16.12",
     "@tailwindcss/vite": "^4.1.16",
     "electron-is-dev": "^3.0.1",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "youtube-dl-exec": "^3.1.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
