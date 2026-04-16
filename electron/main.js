@@ -4,26 +4,37 @@ import { fileURLToPath } from "url";
 import os from "os";
 import fs from "fs";
 import ffmpeg from "fluent-ffmpeg";
+import ffmpegStatic from "ffmpeg-static";
+import ffprobeStatic from "ffprobe-static";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const isDev = !app.isPackaged;
 
-// Cấu hình FFmpeg
-const ffmpegPath = process.platform === "win32" 
-  ? path.join(__dirname, "../resources/ffmpeg.exe")
-  : "ffmpeg";
-const ffprobePath = process.platform === "win32"
-  ? path.join(__dirname, "../resources/ffprobe.exe")
-  : "ffprobe";
+/**
+ * CẤU HÌNH FFMPEG
+ * Ưu tiên file trong thư mục resources (khi đóng gói) 
+ * Nếu không có thì dùng từ thư viện static (khi dev)
+ */
+const fixPathForAsar = (path) => path.replace("app.asar", "app.asar.unpacked");
 
-// Nếu FFmpeg không tồn tại, sử dụng ffmpeg từ PATH
-if (!fs.existsSync(ffmpegPath)) {
-  // ffmpeg sẽ tìm từ system PATH
-} else {
-  ffmpeg.setFfmpegPath(ffmpegPath);
-  ffmpeg.setFfprobePath(ffprobePath);
+let ffmpegPath = ffmpegStatic;
+let ffprobePath = ffprobeStatic.path;
+
+if (!isDev) {
+  // Khi đóng gói, electron-builder thường bỏ file vào resources
+  const prodFfmpeg = path.join(process.resourcesPath, "ffmpeg.exe");
+  const prodFfprobe = path.join(process.resourcesPath, "ffprobe.exe");
+  
+  if (fs.existsSync(prodFfmpeg)) ffmpegPath = prodFfmpeg;
+  if (fs.existsSync(prodFfprobe)) ffprobePath = prodFfprobe;
 }
+
+// Thiết lập cho fluent-ffmpeg
+ffmpeg.setFfmpegPath(fixPathForAsar(ffmpegPath));
+ffmpeg.setFfprobePath(fixPathForAsar(ffprobePath));
+
+console.log("🎬 FFmpeg Path:", ffmpegPath);
 
 let mainWindow;
 
@@ -56,7 +67,6 @@ const createWindow = () => {
     : `file://${path.join(__dirname, "../dist/index.html")}`;
 
   mainWindow.loadURL(startUrl);
-  // Chỉ mở DevTools khi dev
   if (isDev) mainWindow.webContents.openDevTools();
 };
 
@@ -75,7 +85,6 @@ app.on("ready", async () => {
 
 // --------------------- IPC Handlers --------------------
 
-// 1. Chọn file video từ máy tính
 ipcMain.handle("select-video", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile"],
@@ -91,58 +100,67 @@ ipcMain.handle("select-video", async () => {
 
   const filePath = result.filePaths[0];
   const fileName = path.basename(filePath);
-  
-  console.log("✅ Chọn file video:", filePath);
-
   return { success: true, filePath, fileName };
 });
 
-// 2. Cắt video 2 phút đầu
 ipcMain.handle("trim-video", async (event, inputPath) => {
   return new Promise((resolve) => {
     const outputFolder = path.join(os.homedir(), "Downloads");
     const inputFileName = path.basename(inputPath, path.extname(inputPath));
-    const outputPath = path.join(outputFolder, `${inputFileName}_2min.mp4`);
+    // Xóa ký tự đặc biệt từ tên file
+    const safeName = inputFileName.replace(/[^a-zA-Z0-9_-]/g, "");
+    const outputPath = path.join(outputFolder, `${safeName}_2min.mp4`);
 
-    console.log("🚀 Bắt đầu cắt video...");
-    console.log("Input:", inputPath);
-    console.log("Output:", outputPath);
+    if (!fs.existsSync(outputFolder)) {
+      fs.mkdirSync(outputFolder, { recursive: true });
+    }
+
+    console.log("📝 Input file:", inputPath);
+    console.log("📝 Output file:", outputPath);
 
     ffmpeg(inputPath)
       .setStartTime("00:00:00")
-      .duration(120) // 2 phút = 120 giây
+      .duration(120)
+      .outputOptions([
+        "-c:v copy",
+        "-c:a copy",
+        "-f mp4",
+        "-movflags +faststart",
+        "-y"
+      ])
       .output(outputPath)
       .on("start", (cmd) => {
-        console.log("🎬 FFmpeg command:", cmd);
+        console.log("🎬 FFmpeg Command:", cmd);
       })
       .on("progress", (progress) => {
-        console.log(`⏳ Tiến độ: ${progress.percent?.toFixed(2) || 0}%`);
-        // Có thể gửi tiến độ cho frontend nếu cần
-        mainWindow.webContents.send("trim-progress", {
-          percent: progress.percent || 0,
-        });
+        console.log(`⏳ Progress: ${progress.percent?.toFixed(2) || 0}%`);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("trim-progress", {
+            percent: progress.percent || 0,
+          });
+        }
       })
       .on("end", () => {
         console.log("✅ Cắt video thành công!");
         shell.openPath(outputFolder);
         resolve({
           success: true,
-          message: "✅ Cắt video thành công! Đã mở thư mục Downloads.",
+          message: "✅ Cắt video thành công!",
           outputPath,
         });
       })
       .on("error", (err) => {
-        console.error("❌ Lỗi cắt video:", err.message);
+        console.error("❌ FFmpeg Error:", err.message);
         resolve({
           success: false,
           message: `❌ Lỗi: ${err.message}`,
         });
       })
-      .save();
+      .run();
   });
 });
 
-// --------------------- Kết thúc IPC Handlers --------------------
+// -------------------------------------------------------
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
@@ -155,7 +173,7 @@ const createMenu = () => {
       label: "View",
       submenu: [
         { label: "Reload", role: "reload" },
-        { label: "DevTools", role: "toggleDevTools", accelerator: "F12" },
+        { label: "DevTools", role: "toggleDevTools" },
       ],
     },
   ];
