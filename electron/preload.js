@@ -13,13 +13,16 @@ contextBridge.exposeInMainWorld("electron", {
     send: (channel, ...args) => ipcRenderer.send(channel, ...args),
   },
 
-  // Hàm để chọn file video
+  // Chọn file video
   selectVideo: () => ipcRenderer.invoke("select-video"),
   
-  // Hàm để cắt video 2 phút đầu
-  trimVideo: (filePath) => ipcRenderer.invoke("trim-video", filePath),
+  // Lấy duration video
+  getVideoDuration: (filePath) => ipcRenderer.invoke("get-video-duration", filePath),
   
-  // Lắng nghe sự kiện tiến độ cắt video
+  // Cắt nhiều đoạn video
+  trimMultipleSegments: (data) => ipcRenderer.invoke("trim-multiple-segments", data),
+  
+  // Lắng nghe tiến độ cắt video
   onTrimProgress: (callback) => {
     ipcRenderer.on("trim-progress", (event, data) => callback(data));
   },
