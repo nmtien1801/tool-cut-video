@@ -13,7 +13,7 @@ const isDev = !app.isPackaged;
 
 /**
  * CẤU HÌNH FFMPEG
- * Ưu tiên file trong thư mục resources (khi đóng gói) 
+ * Ưu tiên file trong thư mục resources (khi đóng gói)
  * Nếu không có thì dùng từ thư viện static (khi dev)
  */
 const fixPathForAsar = (path) => path.replace("app.asar", "app.asar.unpacked");
@@ -25,7 +25,7 @@ if (!isDev) {
   // Khi đóng gói, electron-builder thường bỏ file vào resources
   const prodFfmpeg = path.join(process.resourcesPath, "ffmpeg.exe");
   const prodFfprobe = path.join(process.resourcesPath, "ffprobe.exe");
-  
+
   if (fs.existsSync(prodFfmpeg)) ffmpegPath = prodFfmpeg;
   if (fs.existsSync(prodFfprobe)) ffprobePath = prodFfprobe;
 }
@@ -59,6 +59,7 @@ const createWindow = () => {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: false,
+      webSecurity: false, // Cho phép load file
     },
   });
 
@@ -89,7 +90,10 @@ ipcMain.handle("select-video", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile"],
     filters: [
-      { name: "Video Files", extensions: ["mp4", "avi", "mkv", "mov", "flv", "wmv", "webm"] },
+      {
+        name: "Video Files",
+        extensions: ["mp4", "avi", "mkv", "mov", "flv", "wmv", "webm"],
+      },
       { name: "All Files", extensions: ["*"] },
     ],
   });
@@ -120,79 +124,88 @@ ipcMain.handle("get-video-duration", async (event, inputPath) => {
 });
 
 // Cắt nhiều đoạn video
-ipcMain.handle("trim-multiple-segments", async (event, { inputPath, segments }) => {
-  return new Promise((resolve) => {
-    const outputFolder = path.join(os.homedir(), "Downloads");
-    const inputFileName = path.basename(inputPath, path.extname(inputPath));
-    const safeName = inputFileName.replace(/[^a-zA-Z0-9_-]/g, "");
+ipcMain.handle(
+  "trim-multiple-segments",
+  async (event, { inputPath, segments }) => {
+    return new Promise((resolve) => {
+      const outputFolder = path.join(os.homedir(), "Downloads");
+      const inputFileName = path.basename(inputPath, path.extname(inputPath));
+      const safeName = inputFileName.replace(/[^a-zA-Z0-9_-]/g, "");
 
-    if (!fs.existsSync(outputFolder)) {
-      fs.mkdirSync(outputFolder, { recursive: true });
-    }
+      if (!fs.existsSync(outputFolder)) {
+        fs.mkdirSync(outputFolder, { recursive: true });
+      }
 
-    // Tạo thư mục cho các đoạn cắt
-    const segmentsFolder = path.join(outputFolder, `${safeName}_segments`);
-    if (!fs.existsSync(segmentsFolder)) {
-      fs.mkdirSync(segmentsFolder, { recursive: true });
-    }
+      // Tạo thư mục cho các đoạn cắt
+      const segmentsFolder = path.join(outputFolder, `${safeName}_segments`);
+      if (!fs.existsSync(segmentsFolder)) {
+        fs.mkdirSync(segmentsFolder, { recursive: true });
+      }
 
-    let completedSegments = 0;
-    let totalSegments = segments.length;
+      let completedSegments = 0;
+      let totalSegments = segments.length;
 
-    // Cắt từng đoạn
-    segments.forEach((segment, index) => {
-      const outputPath = path.join(segmentsFolder, `segment_${index + 1}.mp4`);
+      // Cắt từng đoạn
+      segments.forEach((segment, index) => {
+        const outputPath = path.join(
+          segmentsFolder,
+          `segment_${index + 1}.mp4`,
+        );
 
-      ffmpeg(inputPath)
-        .setStartTime(segment.startTime)
-        .duration(segment.duration)
-        .outputOptions([
-          "-c:v copy",
-          "-c:a copy",
-          "-f mp4",
-          "-movflags +faststart",
-          "-y"
-        ])
-        .output(outputPath)
-        .on("start", (cmd) => {
-          console.log(`🎬 Segment ${index + 1}/${totalSegments}:`, cmd);
-        })
-        .on("progress", (progress) => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            const overallProgress = ((completedSegments + (progress.percent || 0) / 100) / totalSegments) * 100;
-            mainWindow.webContents.send("trim-progress", {
-              percent: overallProgress,
-              currentSegment: index + 1,
-              totalSegments: totalSegments,
-            });
-          }
-        })
-        .on("end", () => {
-          completedSegments++;
-          console.log(`✅ Segment ${index + 1} hoàn thành`);
+        ffmpeg(inputPath)
+          .setStartTime(segment.startTime)
+          .duration(segment.duration)
+          .outputOptions([
+            "-c:v copy",
+            "-c:a copy",
+            "-f mp4",
+            "-movflags +faststart",
+            "-y",
+          ])
+          .output(outputPath)
+          .on("start", (cmd) => {
+            console.log(`🎬 Segment ${index + 1}/${totalSegments}:`, cmd);
+          })
+          .on("progress", (progress) => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              const overallProgress =
+                ((completedSegments + (progress.percent || 0) / 100) /
+                  totalSegments) *
+                100;
+              mainWindow.webContents.send("trim-progress", {
+                percent: overallProgress,
+                currentSegment: index + 1,
+                totalSegments: totalSegments,
+              });
+            }
+          })
+          .on("end", () => {
+            completedSegments++;
+            console.log(`✅ Segment ${index + 1} hoàn thành`);
 
-          // Nếu tất cả đoạn đã xong
-          if (completedSegments === totalSegments) {
-            console.log("✅ Tất cả đoạn đã cắt thành công!");
-            shell.openPath(segmentsFolder);
+            // Nếu tất cả đoạn đã xong
+            if (completedSegments === totalSegments) {
+              console.log("✅ Tất cả đoạn đã cắt thành công!");
+              shell.openPath(segmentsFolder);
+              resolve({
+                success: true,
+                message: `✅ Cắt ${totalSegments} đoạn thành công!`,
+                outputFolder: segmentsFolder,
+              });
+            }
+          })
+          .on("error", (err) => {
+            console.error(`❌ Lỗi segment ${index + 1}:`, err.message);
             resolve({
-              success: true,
-              message: `✅ Cắt ${totalSegments} đoạn thành công!`,
-              outputFolder: segmentsFolder,
+              success: false,
+              message: `❌ Lỗi cắt segment ${index + 1}: ${err.message}`,
             });
-          }
-        })
-        .on("error", (err) => {
-          console.error(`❌ Lỗi segment ${index + 1}:`, err.message);
-          resolve({
-            success: false,
-            message: `❌ Lỗi cắt segment ${index + 1}: ${err.message}`,
-          });
-        })
-        .run();
+          })
+          .run();
+      });
     });
-  });
-});
+  },
+);
 
 // -------------------------------------------------------
 

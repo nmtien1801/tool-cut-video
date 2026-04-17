@@ -9,6 +9,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [trimming, setTrimming] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState(null);
 
   // Lắng nghe tiến độ cắt video
   useEffect(() => {
@@ -25,12 +26,18 @@ function App() {
         filePath: res.filePath,
         fileName: res.fileName,
       });
-      
-      // Lấy duration video
+
+      // Fix path cho cả Windows lẫn Mac/Linux
+      const normalized = res.filePath.replace(/\\/g, '/');
+      const encoded = normalized
+        .split('/')
+        .map(part => encodeURIComponent(part))
+        .join('/');
+      setVideoPreviewUrl(`file:///${encoded}`);
+
       const durationRes = await window.electron.getVideoDuration(res.filePath);
       if (durationRes.success) {
         setVideoDuration(durationRes.duration);
-        // Khởi tạo segments mặc định
         initializeSegments(segmentCount, durationRes.duration);
       }
     } else {
@@ -85,7 +92,7 @@ function App() {
 
     setTrimming(true);
     setProgress(0);
-    
+
     const res = await window.electron.trimMultipleSegments({
       inputPath: selectedFile.filePath,
       segments: segments,
@@ -115,18 +122,18 @@ function App() {
       {/* Header */}
       <div className="mb-8 text-center">
         <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500 mb-3">
-           VIDEO SEGMENT CUTTER
+          VIDEO SEGMENT CUTTER
         </h1>
         <p className="text-slate-400 text-lg">Cắt video thành nhiều đoạn tùy ý</p>
       </div>
 
       {/* Main Container - 2 Columns */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 max-w-6xl mx-auto">
-        
+
         {/* Column 1: Video Selection */}
         <div className="space-y-6">
           <h2 className="text-2xl font-bold text-blue-400 mb-4">Chọn Video</h2>
-          
+
           <button
             onClick={handleSelectFile}
             disabled={loading || trimming}
@@ -137,9 +144,24 @@ function App() {
 
           {selectedFile && (
             <div className="bg-slate-800 border border-slate-700 rounded-lg p-4 space-y-3">
+              {/* Video Preview Player */}
+              {videoPreviewUrl && (
+                <div className="space-y-2">
+                  <p className="text-sm text-slate-400 font-semibold">👁️ Xem trước:</p>
+                  <video
+                    controls
+                    className="w-full rounded-lg bg-black shadow-lg"
+                    style={{ maxHeight: '300px' }}
+                  >
+                    <source src={videoPreviewUrl} />
+                    Trình duyệt của bạn không hỗ trợ video tag.
+                  </video>
+                </div>
+              )}
+
               <div>
                 <p className="text-sm text-slate-400 font-semibold">Tên file:</p>
-                <p className="text-blue-400 break-all">{selectedFile.fileName}</p>
+                <p className="text-blue-400 break-all text-sm">{selectedFile.fileName}</p>
               </div>
               <div>
                 <p className="text-sm text-slate-400 font-semibold">Thời lượng:</p>
