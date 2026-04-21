@@ -207,6 +207,141 @@ ipcMain.handle(
   },
 );
 
+/**
+ * XUẤT VIDEO THEO TỈ LỆ KHUNG HÌNH (16:9 hoặc 9:16)
+ *
+ * Thuật toán ffmpeg filter_complex:
+ * 1. [bg]  = Scale video lên vừa khung → blur mạnh → làm nền
+ * 2. [fg]  = Scale video contain trong khung (giữ aspect ratio)
+ * 3. overlay fg lên giữa bg
+ *
+ * Ví dụ cho 9:16 (1080x1920):
+ *   [0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[bg];
+ *   [0:v]scale=1080:1920:force_original_aspect_ratio=decrease[fg];
+ *   [bg][fg]overlay=(W-w)/2:(H-h)/2[out]
+ */
+ipcMain.handle(
+  "export-with-aspect-ratio",
+  async (event, { inputPath, aspectRatio, segments }) => {
+    return new Promise((resolve) => {
+      // Xác định kích thước output
+      let outW, outH;
+      if (aspectRatio === "16:9") {
+        outW = 1920;
+        outH = 1080;
+      } else if (aspectRatio === "9:16") {
+        outW = 1080;
+        outH = 1920;
+      } else {
+        return resolve({ success: false, message: "Tỉ lệ không hợp lệ" });
+      }
+
+      const outputFolder = path.join(os.homedir(), "Downloads");
+      const inputFileName = path.basename(inputPath, path.extname(inputPath));
+      const safeName = inputFileName.replace(/[^a-zA-Z0-9_-]/g, "");
+      const ratioLabel = aspectRatio.replace(":", "x");
+
+      if (!fs.existsSync(outputFolder)) {
+        fs.mkdirSync(outputFolder, { recursive: true });
+      }
+
+      // Tạo thư mục riêng
+      const exportFolder = path.join(
+        outputFolder,
+        `${safeName}_${ratioLabel}`
+      );
+      if (!fs.existsSync(exportFolder)) {
+        fs.mkdirSync(exportFolder, { recursive: true });
+      }
+
+      // filter_complex: blur background + contain foreground
+      // boxblur radius=15 power=2 là đủ blur mà nhanh hơn radius=30
+      const filterComplex =
+        `[0:v]scale=${outW}:${outH}:force_original_aspect_ratio=increase,` +
+        `crop=${outW}:${outH},boxblur=luma_radius=15:luma_power=2[bg];` +
+        `[0:v]scale=${outW}:${outH}:force_original_aspect_ratio=decrease[fg];` +
+        `[bg][fg]overlay=(W-w)/2:(H-h)/2[out]`;
+
+      // Nếu có segments thì xuất từng đoạn, nếu không thì xuất cả file
+      const exportList =
+        segments && segments.length > 0
+          ? segments.map((seg, i) => ({ ...seg, index: i }))
+          : [{ startTime: null, duration: null, index: 0, fullVideo: true }];
+
+      let completed = 0;
+      const total = exportList.length;
+      let hasError = false;
+
+      exportList.forEach(({ startTime, duration, index, fullVideo }) => {
+        const outputPath = path.join(
+          exportFolder,
+          fullVideo
+            ? `${safeName}_${ratioLabel}.mp4`
+            : `segment_${index + 1}_${ratioLabel}.mp4`
+        );
+
+        let cmd = ffmpeg(inputPath);
+
+        if (!fullVideo) {
+          cmd = cmd.setStartTime(startTime).duration(duration);
+        }
+
+        cmd
+          .complexFilter(filterComplex, "out")
+          .outputOptions([
+            "-c:v libx264",
+            "-preset ultrafast",
+            "-tune fastdecode",
+            "-crf 28",
+            "-threads 0",
+            "-c:a aac",
+            "-b:a 128k",
+            "-movflags +faststart",
+            "-y",
+          ])
+          .output(outputPath)
+          .on("start", (cmdStr) => {
+            console.log(`🎬 Xuất ${ratioLabel} - item ${index + 1}:`, cmdStr);
+          })
+          .on("progress", (progress) => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              const overallProgress =
+                ((completed + (progress.percent || 0) / 100) / total) * 100;
+              mainWindow.webContents.send("export-progress", {
+                percent: overallProgress,
+                currentItem: index + 1,
+                totalItems: total,
+              });
+            }
+          })
+          .on("end", () => {
+            completed++;
+            console.log(`✅ Xuất xong item ${index + 1}/${total}`);
+            if (completed === total && !hasError) {
+              shell.openPath(exportFolder);
+              resolve({
+                success: true,
+                message: `✅ Xuất ${total} video (${aspectRatio}) thành công!`,
+                outputFolder: exportFolder,
+              });
+            }
+          })
+          .on("error", (err) => {
+            if (!hasError) {
+              hasError = true;
+              console.error(`❌ Lỗi xuất item ${index + 1}:`, err.message);
+              resolve({
+                success: false,
+                message: `❌ Lỗi xuất video: ${err.message}`,
+              });
+            }
+          })
+          .run();
+      });
+    });
+  }
+);
+
 // -------------------------------------------------------
 
 app.on("window-all-closed", () => {
