@@ -25,12 +25,10 @@ if (!isDev) {
   // Khi đóng gói, electron-builder thường bỏ file vào resources
   const prodFfmpeg = path.join(process.resourcesPath, "ffmpeg.exe");
   const prodFfprobe = path.join(process.resourcesPath, "ffprobe.exe");
-
   if (fs.existsSync(prodFfmpeg)) ffmpegPath = prodFfmpeg;
   if (fs.existsSync(prodFfprobe)) ffprobePath = prodFfprobe;
 }
 
-// Thiết lập cho fluent-ffmpeg
 ffmpeg.setFfmpegPath(fixPathForAsar(ffmpegPath));
 ffmpeg.setFfprobePath(fixPathForAsar(ffprobePath));
 
@@ -84,6 +82,20 @@ app.on("ready", async () => {
   createMenu();
 });
 
+// --------------------- HELPERS --------------------
+
+/**
+ * Chuyển timemark "HH:MM:SS.ms" từ ffmpeg progress → seconds.
+ * Dùng timemark thay vì progress.percent vì percent tính theo input bitrate,
+ * không chính xác với filter_complex hoặc khi encode nặng hơn input.
+ */
+const timemarkToSeconds = (timemark) => {
+  if (!timemark || typeof timemark !== "string") return 0;
+  const parts = timemark.split(":").map(parseFloat);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return parseFloat(timemark) || 0;
+};
+
 // --------------------- IPC Handlers --------------------
 
 ipcMain.handle("select-video", async () => {
@@ -98,16 +110,13 @@ ipcMain.handle("select-video", async () => {
     ],
   });
 
-  if (result.canceled) {
-    return { success: false, message: "Đã hủy chọn file" };
-  }
+  if (result.canceled) return { success: false, message: "Đã hủy chọn file" };
 
   const filePath = result.filePaths[0];
   const fileName = path.basename(filePath);
   return { success: true, filePath, fileName };
 });
 
-// Lấy duration của video
 ipcMain.handle("get-video-duration", async (event, inputPath) => {
   return new Promise((resolve) => {
     ffmpeg.ffprobe(inputPath, (err, metadata) => {
@@ -116,14 +125,13 @@ ipcMain.handle("get-video-duration", async (event, inputPath) => {
         resolve({ success: false, duration: 0, message: err.message });
       } else {
         const duration = Math.floor(metadata.format.duration);
-        console.log("✅ Video duration:", duration, "seconds");
         resolve({ success: true, duration });
       }
     });
   });
 });
 
-// Cắt nhiều đoạn video
+// Cắt nhiều đoạn - stream copy (không re-encode, rất nhanh)
 ipcMain.handle(
   "trim-multiple-segments",
   async (event, { inputPath, segments }) => {
@@ -132,20 +140,18 @@ ipcMain.handle(
       const inputFileName = path.basename(inputPath, path.extname(inputPath));
       const safeName = inputFileName.replace(/[^a-zA-Z0-9_-]/g, "");
 
-      if (!fs.existsSync(outputFolder)) {
+      if (!fs.existsSync(outputFolder))
         fs.mkdirSync(outputFolder, { recursive: true });
-      }
 
-      // Tạo thư mục cho các đoạn cắt
       const segmentsFolder = path.join(outputFolder, `${safeName}_segments`);
-      if (!fs.existsSync(segmentsFolder)) {
+      if (!fs.existsSync(segmentsFolder))
         fs.mkdirSync(segmentsFolder, { recursive: true });
-      }
 
+      const totalDuration = segments.reduce((sum, s) => sum + s.duration, 0);
+      const segmentProcessed = new Array(segments.length).fill(0);
       let completedSegments = 0;
-      let totalSegments = segments.length;
+      const totalSegments = segments.length;
 
-      // Cắt từng đoạn
       segments.forEach((segment, index) => {
         const outputPath = path.join(
           segmentsFolder,
@@ -163,29 +169,46 @@ ipcMain.handle(
             "-y",
           ])
           .output(outputPath)
-          .on("start", (cmd) => {
-            console.log(`🎬 Segment ${index + 1}/${totalSegments}:`, cmd);
-          })
-          .on("progress", (progress) => {
+          .on("start", (cmd) =>
+            console.log(`🎬 Segment ${index + 1}/${totalSegments}:`, cmd),
+          )
+          .on("progress", (prog) => {
             if (mainWindow && !mainWindow.isDestroyed()) {
-              const overallProgress =
-                ((completedSegments + (progress.percent || 0) / 100) /
-                  totalSegments) *
-                100;
+              // Dùng timemark để biết đã encode bao nhiêu giây thực tế
+              const processedSecs = timemarkToSeconds(prog.timemark);
+              segmentProcessed[index] = Math.min(
+                processedSecs,
+                segment.duration,
+              );
+              const totalProcessed = segmentProcessed.reduce(
+                (a, b) => a + b,
+                0,
+              );
+              const percent = Math.min(
+                (totalProcessed / totalDuration) * 100,
+                99,
+              );
               mainWindow.webContents.send("trim-progress", {
-                percent: overallProgress,
+                percent,
                 currentSegment: index + 1,
-                totalSegments: totalSegments,
+                totalSegments,
               });
             }
           })
           .on("end", () => {
             completedSegments++;
+            segmentProcessed[index] = segment.duration;
             console.log(`✅ Segment ${index + 1} hoàn thành`);
 
             // Nếu tất cả đoạn đã xong
             if (completedSegments === totalSegments) {
-              console.log("✅ Tất cả đoạn đã cắt thành công!");
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send("trim-progress", {
+                  percent: 100,
+                  currentSegment: totalSegments,
+                  totalSegments,
+                });
+              }
               shell.openPath(segmentsFolder);
               resolve({
                 success: true,
@@ -208,23 +231,22 @@ ipcMain.handle(
 );
 
 /**
- * XUẤT VIDEO THEO TỈ LỆ KHUNG HÌNH (16:9 hoặc 9:16)
+ * XUẤT VIDEO THEO TỈ LỆ KHUNG HÌNH (16:9 hoặc 9:16) với blur background.
  *
- * Thuật toán ffmpeg filter_complex:
- * 1. [bg]  = Scale video lên vừa khung → blur mạnh → làm nền
- * 2. [fg]  = Scale video contain trong khung (giữ aspect ratio)
- * 3. overlay fg lên giữa bg
+ * === BUG FIX: Input seeking thay vì output seeking ===
+ * Khi dùng .setStartTime() của fluent-ffmpeg, nó đặt -ss SAU -i (output seeking).
+ * Với filter_complex, điều này khiến ffmpeg decode toàn bộ video từ đầu rồi mới skip.
+ * Fix: tạo ffmpeg() không có input, rồi dùng .inputOptions(['-ss X']) TRƯỚC .input(path)
+ * để -ss nằm trước -i → input seeking → seek nhanh, đúng thời điểm.
  *
- * Ví dụ cho 9:16 (1080x1920):
- *   [0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[bg];
- *   [0:v]scale=1080:1920:force_original_aspect_ratio=decrease[fg];
- *   [bg][fg]overlay=(W-w)/2:(H-h)/2[out]
+ * === BUG FIX: Progress chính xác ===
+ * progress.percent từ fluent-ffmpeg tính theo input bitrate, không phản ánh đúng
+ * khi output có filter nặng. Dùng timemark (giây đã encode thực tế) để tính %.
  */
 ipcMain.handle(
   "export-with-aspect-ratio",
   async (event, { inputPath, aspectRatio, segments }) => {
     return new Promise((resolve) => {
-      // Xác định kích thước output
       let outW, outH;
       if (aspectRatio === "16:9") {
         outW = 1920;
@@ -232,42 +254,37 @@ ipcMain.handle(
       } else if (aspectRatio === "9:16") {
         outW = 1080;
         outH = 1920;
-      } else {
-        return resolve({ success: false, message: "Tỉ lệ không hợp lệ" });
-      }
+      } else return resolve({ success: false, message: "Tỉ lệ không hợp lệ" });
 
       const outputFolder = path.join(os.homedir(), "Downloads");
       const inputFileName = path.basename(inputPath, path.extname(inputPath));
       const safeName = inputFileName.replace(/[^a-zA-Z0-9_-]/g, "");
       const ratioLabel = aspectRatio.replace(":", "x");
 
-      if (!fs.existsSync(outputFolder)) {
+      if (!fs.existsSync(outputFolder))
         fs.mkdirSync(outputFolder, { recursive: true });
-      }
 
-      // Tạo thư mục riêng
-      const exportFolder = path.join(
-        outputFolder,
-        `${safeName}_${ratioLabel}`
-      );
-      if (!fs.existsSync(exportFolder)) {
+      const exportFolder = path.join(outputFolder, `${safeName}_${ratioLabel}`);
+      if (!fs.existsSync(exportFolder))
         fs.mkdirSync(exportFolder, { recursive: true });
-      }
 
-      // filter_complex: blur background + contain foreground
-      // boxblur radius=15 power=2 là đủ blur mà nhanh hơn radius=30
+      // filter_complex: nền blur + video contain căn giữa
       const filterComplex =
         `[0:v]scale=${outW}:${outH}:force_original_aspect_ratio=increase,` +
         `crop=${outW}:${outH},boxblur=luma_radius=15:luma_power=2[bg];` +
         `[0:v]scale=${outW}:${outH}:force_original_aspect_ratio=decrease[fg];` +
         `[bg][fg]overlay=(W-w)/2:(H-h)/2[out]`;
 
-      // Nếu có segments thì xuất từng đoạn, nếu không thì xuất cả file
       const exportList =
         segments && segments.length > 0
-          ? segments.map((seg, i) => ({ ...seg, index: i }))
-          : [{ startTime: null, duration: null, index: 0, fullVideo: true }];
+          ? segments.map((seg, i) => ({ ...seg, index: i, fullVideo: false }))
+          : [{ startTime: 0, duration: null, index: 0, fullVideo: true }];
 
+      const totalDuration = exportList.reduce(
+        (sum, s) => sum + (s.duration || 0),
+        0,
+      );
+      const itemProcessed = new Array(exportList.length).fill(0);
       let completed = 0;
       const total = exportList.length;
       let hasError = false;
@@ -277,47 +294,90 @@ ipcMain.handle(
           exportFolder,
           fullVideo
             ? `${safeName}_${ratioLabel}.mp4`
-            : `segment_${index + 1}_${ratioLabel}.mp4`
+            : `segment_${index + 1}_${ratioLabel}.mp4`,
         );
 
-        let cmd = ffmpeg(inputPath);
+        // ffmpeg(inputPath) — fluent-ffmpeg nhận input đúng cách.
+        // addInputOption() inject flags TRƯỚC -i trong lệnh thực tế (input seeking).
+        const cmd = ffmpeg(inputPath);
 
-        if (!fullVideo) {
-          cmd = cmd.setStartTime(startTime).duration(duration);
+        if (!fullVideo && startTime > 0) {
+          cmd.addInputOption(`-ss ${startTime}`);
+        }
+        if (!fullVideo && duration) {
+          cmd.addInputOption(`-t ${duration}`);
         }
 
         cmd
           .complexFilter(filterComplex, "out")
           .outputOptions([
+            "-map [out]", // Video từ filter
+            "-map 0:a?", // Audio gốc (? = không lỗi nếu không có)
             "-c:v libx264",
             "-preset ultrafast",
             "-tune fastdecode",
-            "-crf 28",
+            "-crf 26",
             "-threads 0",
             "-c:a aac",
-            "-b:a 128k",
+            "-b:a 192k",
+            "-pix_fmt yuv420p",
             "-movflags +faststart",
             "-y",
           ])
           .output(outputPath)
           .on("start", (cmdStr) => {
-            console.log(`🎬 Xuất ${ratioLabel} - item ${index + 1}:`, cmdStr);
+            console.log(
+              `🎬 Xuất ${ratioLabel} [${index + 1}/${total}]:`,
+              cmdStr,
+            );
           })
-          .on("progress", (progress) => {
+          .on("progress", (prog) => {
             if (mainWindow && !mainWindow.isDestroyed()) {
-              const overallProgress =
-                ((completed + (progress.percent || 0) / 100) / total) * 100;
-              mainWindow.webContents.send("export-progress", {
-                percent: overallProgress,
-                currentItem: index + 1,
-                totalItems: total,
-              });
+              const processedSecs = timemarkToSeconds(prog.timemark);
+
+              if (totalDuration > 0 && duration) {
+                // Có segments với duration rõ ràng: tính theo tổng giây đã xử lý
+                itemProcessed[index] = Math.min(processedSecs, duration);
+                const totalProcessed = itemProcessed.reduce((a, b) => a + b, 0);
+                const percent = Math.min(
+                  (totalProcessed / totalDuration) * 100,
+                  99,
+                );
+                mainWindow.webContents.send("export-progress", {
+                  percent,
+                  currentItem: index + 1,
+                  totalItems: total,
+                  timemark: prog.timemark,
+                });
+              } else {
+                // Xuất cả file (không biết duration): hiển thị timemark trực tiếp
+                const percent = Math.min(
+                  ((completed + Math.min(processedSecs / 3600, 0.99)) / total) *
+                    100,
+                  99,
+                );
+                mainWindow.webContents.send("export-progress", {
+                  percent,
+                  currentItem: index + 1,
+                  totalItems: total,
+                  timemark: prog.timemark,
+                });
+              }
             }
           })
           .on("end", () => {
             completed++;
-            console.log(`✅ Xuất xong item ${index + 1}/${total}`);
+            if (duration) itemProcessed[index] = duration;
+            console.log(`✅ Xuất xong [${index + 1}/${total}]`);
+
             if (completed === total && !hasError) {
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send("export-progress", {
+                  percent: 100,
+                  currentItem: total,
+                  totalItems: total,
+                });
+              }
               shell.openPath(exportFolder);
               resolve({
                 success: true,
@@ -329,7 +389,7 @@ ipcMain.handle(
           .on("error", (err) => {
             if (!hasError) {
               hasError = true;
-              console.error(`❌ Lỗi xuất item ${index + 1}:`, err.message);
+              console.error(`❌ Lỗi xuất [${index + 1}]:`, err.message);
               resolve({
                 success: false,
                 message: `❌ Lỗi xuất video: ${err.message}`,
@@ -339,7 +399,7 @@ ipcMain.handle(
           .run();
       });
     });
-  }
+  },
 );
 
 // -------------------------------------------------------
