@@ -11,48 +11,53 @@ function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [timemark, setTimemark] = useState(''); // Hiển thị thời gian thực khi xuất full video
+  const [etaSeconds, setEtaSeconds] = useState(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState(null);
-
-  const [aspectRatio, setAspectRatio] = useState('original'); // 'original' | '16:9' | '9:16'
+  const [aspectRatio, setAspectRatio] = useState('original');
+  const [encoderName, setEncoderName] = useState('đang kiểm tra...');
 
   const navigate = useNavigate();
   const { logout } = useAuth();
 
   useEffect(() => {
+    // Kiểm tra GPU ngay khi vào Dashboard
+    window.electron.detectHwEncoder().then(enc => setEncoderName(enc));
+
+    // Đăng ký lắng nghe tiến độ từ Backend
     const removeTrimListener = window.electron.onTrimProgress((data) => {
       setProgress(Math.round(data.percent || 0));
-      if (data.timemark) setTimemark(data.timemark);
+      if (data.eta !== undefined) setEtaSeconds(data.eta);
     });
     const removeExportListener = window.electron.onExportProgress((data) => {
       setProgress(Math.round(data.percent || 0));
-      if (data.timemark) setTimemark(data.timemark);
+      if (data.eta !== undefined) setEtaSeconds(data.eta);
     });
+
     return () => {
       removeTrimListener?.();
       removeExportListener?.();
     };
   }, []);
 
-  const handleLogout = () => {
-    logout();
-    navigate('/login');
-  };
-
   const handleSelectFile = async () => {
     setLoading(true);
-    const res = await window.electron.selectVideo();
-    if (res.success) {
-      setSelectedFile({ filePath: res.filePath, fileName: res.fileName });
-      const normalized = res.filePath.replace(/\\/g, '/');
-      setVideoPreviewUrl(`file:///${normalized}`);
-      const durationRes = await window.electron.getVideoDuration(res.filePath);
-      if (durationRes.success) {
-        setVideoDuration(durationRes.duration);
-        initializeSegments(segmentCount, durationRes.duration);
+    try {
+      const res = await window.electron.selectVideo();
+      if (res?.success) {
+        setSelectedFile({ filePath: res.filePath, fileName: res.fileName });
+        const normalized = res.filePath.replace(/\\/g, '/');
+        setVideoPreviewUrl(`file:///${normalized}`);
+        const durationRes = await window.electron.getVideoDuration(res.filePath);
+        if (durationRes?.success) {
+          setVideoDuration(durationRes.duration);
+          initializeSegments(segmentCount, durationRes.duration);
+        }
       }
+    } catch (err) {
+      console.error("Lỗi chọn file:", err);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const initializeSegments = (count, duration) => {
@@ -66,13 +71,8 @@ function Dashboard() {
     setSegments(newSegments);
   };
 
-  // FIX: hàm này bị thiếu trong phiên bản trước
   const handleSegmentChange = (id, field, value) => {
-    setSegments(prev =>
-      prev.map(seg =>
-        seg.id === id ? { ...seg, [field]: parseInt(value) || 0 } : seg
-      )
-    );
+    setSegments(prev => prev.map(seg => seg.id === id ? { ...seg, [field]: parseInt(value) || 0 } : seg));
   };
 
   const handleSegmentCountChange = (e) => {
@@ -81,232 +81,103 @@ function Dashboard() {
     if (videoDuration > 0) initializeSegments(count, videoDuration);
   };
 
-  const getTotalDuration = () => segments.reduce((sum, s) => sum + (s.duration || 0), 0);
-
-  const isValidSegments = () =>
-    segments.length > 0 &&
-    segments.every(s => s.duration > 0) &&
-    getTotalDuration() <= videoDuration;
+  const formatTime = (s) => {
+    if (!s && s !== 0) return '00:00:00';
+    const res = new Date(s * 1000).toISOString().substr(11, 8);
+    return res;
+  };
 
   const handleAction = async () => {
-    if (!selectedFile || !isValidSegments()) return;
+    if (!selectedFile || processing) return;
     setProcessing(true);
     setProgress(0);
-    setTimemark('');
+    setEtaSeconds(null);
 
-    let res;
-    if (aspectRatio === 'original') {
-      res = await window.electron.trimMultipleSegments({
-        inputPath: selectedFile.filePath,
-        segments,
-      });
-    } else {
-      res = await window.electron.exportWithAspectRatio({
-        inputPath: selectedFile.filePath,
-        aspectRatio,
-        segments,
-      });
-    }
+    const payload = { inputPath: selectedFile.filePath, aspectRatio, segments };
+    const res = (aspectRatio === 'original')
+      ? await window.electron.trimMultipleSegments(payload)
+      : await window.electron.exportWithAspectRatio(payload);
 
     alert(res.message);
     setProcessing(false);
-    setProgress(0);
-    setTimemark('');
   };
 
-  const formatTime = (s) => {
-    if (!s && s !== 0) return '00:00:00';
-    return new Date(s * 1000).toISOString().substr(11, 8);
-  };
-
-  const totalSegDuration = getTotalDuration();
+  const totalSegDuration = segments.reduce((sum, s) => sum + (s.duration || 0), 0);
   const isOverDuration = totalSegDuration > videoDuration;
+  const isGpu = encoderName !== "libx264" && !encoderName.includes("kiểm tra");
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-8 font-sans">
-      <div className="max-w-6xl mx-auto flex justify-between items-center mb-10">
-        <h1 className="text-4xl font-black bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">
-          CREATIMIC STUDIO
-        </h1>
-        <button
-          onClick={handleLogout}
-          className="bg-red-500/20 hover:bg-red-500 text-red-400 hover:text-white px-5 py-2 rounded-lg transition-all border border-red-500/50"
-        >
-          Đăng Xuất
-        </button>
+    <div className="min-h-screen bg-slate-900 text-white p-8 font-sans">
+      {/* Header & GPU Badge */}
+      <div className="max-w-6xl mx-auto flex items-center mb-10">
+        <h1 className="text-3xl font-black text-blue-500 mr-auto">CUT VIDEO PRO</h1>
+        <div className={`mr-4 px-4 py-1.5 rounded-lg border text-xs font-bold transition-all ${isGpu ? 'bg-purple-500/20 border-purple-500/50 text-purple-400' : 'bg-slate-800 border-slate-700 text-slate-400'
+          }`}>
+          {isGpu ? `⚡ GPU: ${encoderName.toUpperCase()}` : `🖥 CPU: LIBX264`}
+        </div>
+        <button onClick={() => { logout(); navigate('/login'); }} className="text-red-400 border border-red-500/50 px-4 py-1.5 rounded-lg hover:bg-red-500 hover:text-white transition-all">Đăng Xuất</button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 max-w-6xl mx-auto">
-
-        {/* Cột trái: Media */}
+        {/* Left Panel: Preview */}
         <div className="space-y-6">
-          <button
-            onClick={handleSelectFile}
-            disabled={processing || loading}
-            className="w-full py-8 border-2 border-dashed border-slate-700 rounded-2xl hover:border-blue-500 transition-all text-slate-400 hover:text-blue-400 font-bold disabled:opacity-50"
-          >
-            {loading
-              ? '⏳ Đang chọn...'
-              : selectedFile
-                ? `✅ ${selectedFile.fileName}`
-                : '📁 Kéo thả hoặc Chọn Video'}
+          <button onClick={handleSelectFile} disabled={processing} className="w-full py-12 border-2 border-dashed border-slate-700 rounded-2xl hover:border-blue-500 text-slate-500 font-bold disabled:opacity-50">
+            {selectedFile ? `✅ ${selectedFile.fileName}` : '📁 CHỌN VIDEO ĐẦU VÀO'}
           </button>
-
           {selectedFile && (
-            <div className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700">
-              <video
-                src={videoPreviewUrl}
-                controls
-                className="w-full rounded-xl bg-black mb-4 shadow-2xl"
-                style={{ maxHeight: '300px' }}
-              />
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-500">Thời lượng gốc:</span>
-                <span className="text-green-400 font-mono">{formatTime(videoDuration)}</span>
+            <div className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700 shadow-xl">
+              <video src={videoPreviewUrl} controls className="w-full rounded-xl bg-black mb-4" style={{ maxHeight: '320px' }} />
+              <div className="flex justify-between text-sm font-mono text-slate-400">
+                <span>THỜI LƯỢNG GỐC:</span>
+                <span className="text-blue-400">{formatTime(videoDuration)}</span>
               </div>
             </div>
           )}
         </div>
 
-        {/* Cột phải: Cấu hình */}
+        {/* Right Panel: Settings */}
         <div className="space-y-6">
-          <h2 className="text-xl font-bold text-slate-300">Cấu hình Cắt & Xuất</h2>
-
           <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 space-y-6">
-
-            {/* Tỉ lệ đầu ra */}
-            <div>
-              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Tỉ lệ đầu ra</label>
-              <div className="grid grid-cols-3 gap-3 mt-3">
-                {[
-                  { id: 'original', label: 'Gốc', sub: 'Cắt nhanh' },
-                  { id: '16:9', label: '16 : 9', sub: 'Ngang (YouTube)' },
-                  { id: '9:16', label: '9 : 16', sub: 'Dọc (Reels/TikTok)' },
-                ].map((item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => setAspectRatio(item.id)}
-                    disabled={processing}
-                    className={`p-3 rounded-xl border-2 transition-all text-left disabled:opacity-50 ${aspectRatio === item.id
-                      ? 'border-blue-500 bg-blue-500/10'
-                      : 'border-slate-700 bg-slate-900/50 hover:border-slate-500'
-                      }`}
-                  >
-                    <div className={`font-bold text-sm ${aspectRatio === item.id ? 'text-blue-400' : 'text-slate-400'}`}>
-                      {item.label}
-                    </div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">{item.sub}</div>
-                  </button>
-                ))}
-              </div>
-              {aspectRatio !== 'original' && (
-                <p className="text-xs text-slate-500 mt-2">
-                  ✨ Video sẽ được <span className="text-yellow-400">contain</span> trong khung — phần trống lấp bằng <span className="text-yellow-400">blur</span>
-                </p>
-              )}
+            {/* Ratio Selection */}
+            <div className="grid grid-cols-3 gap-3">
+              {['original', '16:9', '9:16'].map(r => (
+                <button key={r} onClick={() => setAspectRatio(r)} className={`p-3 rounded-xl border-2 transition-all ${aspectRatio === r ? 'border-blue-500 bg-blue-500/10 text-blue-400' : 'border-slate-700 text-slate-500'}`}>
+                  <div className="font-bold uppercase text-xs">{r === 'original' ? 'Gốc (Cắt)' : r}</div>
+                </button>
+              ))}
             </div>
 
-            {/* Số lượng đoạn */}
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-sm font-semibold text-slate-300">Số đoạn muốn cắt:</span>
-              <input
-                type="number"
-                min="1"
-                max="20"
-                value={segmentCount}
-                onChange={handleSegmentCountChange}
-                disabled={processing || !selectedFile}
-                className="w-20 bg-slate-900 border border-slate-700 rounded-lg p-2 text-center text-white disabled:opacity-50"
-              />
+            {/* Segments Config */}
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-bold text-slate-400 uppercase">Số đoạn:</span>
+              <input type="number" value={segmentCount} onChange={handleSegmentCountChange} className="w-16 bg-slate-900 border border-slate-700 rounded p-1 text-center" />
             </div>
 
-            {/* Thông tin tổng duration */}
-            {segments.length > 0 && (
-              <div className={`flex justify-between text-xs px-3 py-2 rounded-lg border ${isOverDuration
-                ? 'bg-red-900/30 border-red-600 text-red-400'
-                : 'bg-green-900/20 border-green-800 text-green-400'
-                }`}>
-                <span>Tổng thời gian cắt: <strong>{formatTime(totalSegDuration)}</strong></span>
-                <span>Video gốc: <strong>{formatTime(videoDuration)}</strong></span>
-              </div>
-            )}
+            <div className="space-y-3 max-h-64 overflow-y-auto pr-2">
+              {segments.map((seg, idx) => (
+                <div key={seg.id} className="grid grid-cols-2 gap-3 bg-slate-900/50 p-3 rounded-xl border border-slate-700">
+                  <input type="number" value={seg.startTime} onChange={(e) => handleSegmentChange(seg.id, 'startTime', e.target.value)} className="bg-transparent text-blue-400 text-sm font-mono" />
+                  <input type="number" value={seg.duration} onChange={(e) => handleSegmentChange(seg.id, 'duration', e.target.value)} className="bg-transparent text-purple-400 text-sm font-mono text-right" />
+                </div>
+              ))}
+            </div>
 
-            {/* List Segments */}
-            {segments.length > 0 && (
-              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                {segments.map((seg, idx) => (
-                  <div
-                    key={seg.id}
-                    className="grid grid-cols-2 gap-3 bg-slate-900/80 p-3 rounded-xl border border-slate-700"
-                  >
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-slate-500 uppercase tracking-wider">
-                        Đoạn {idx + 1} — Bắt đầu (s)
-                      </label>
-                      <input
-                        type="number"
-                        min="0"
-                        max={videoDuration}
-                        value={seg.startTime}
-                        onChange={(e) => handleSegmentChange(seg.id, 'startTime', e.target.value)}
-                        disabled={processing}
-                        className="w-full bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 font-mono text-blue-400 text-sm disabled:opacity-50"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-slate-500 uppercase tracking-wider">
-                        Thời lượng (s)
-                      </label>
-                      <input
-                        type="number"
-                        min="1"
-                        value={seg.duration}
-                        onChange={(e) => handleSegmentChange(seg.id, 'duration', e.target.value)}
-                        disabled={processing}
-                        className="w-full bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 font-mono text-purple-400 text-sm disabled:opacity-50"
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Nút thực hiện */}
-            <button
-              onClick={handleAction}
-              disabled={!selectedFile || !isValidSegments() || processing || isOverDuration}
-              className="w-full py-5 rounded-2xl font-black text-lg shadow-xl transition-all disabled:opacity-40 disabled:grayscale
-                bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 shadow-blue-500/20"
-            >
-              {processing
-                ? `⚙️ ĐANG XỬ LÝ... ${progress}%`
-                : !selectedFile
-                  ? 'Chọn video trước'
-                  : isOverDuration
-                    ? '⚠️ Tổng đoạn vượt quá thời lượng'
-                    : `🚀 BẮT ĐẦU XUẤT (${aspectRatio.toUpperCase()})`}
+            {/* Action Button & Progress */}
+            <button onClick={handleAction} disabled={!selectedFile || isOverDuration || processing} className="w-full py-4 rounded-xl font-bold bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 transition-all shadow-lg shadow-blue-900/20">
+              {processing ? `ĐANG XỬ LÝ...` : `🚀 XUẤT VIDEO`}
             </button>
 
-            {/* Progress bar + timemark */}
             {processing && (
               <div className="space-y-2">
                 <div className="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-blue-400 to-purple-500 transition-all duration-300 ease-out"
-                    style={{ width: `${progress}%` }}
-                  />
+                  <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${progress}%` }} />
                 </div>
-                <div className="flex justify-between text-xs text-slate-500">
+                <div className="flex justify-between text-xs font-mono text-slate-500">
                   <span>{progress}%</span>
-                  {timemark && (
-                    <span className="font-mono text-slate-400">
-                      ⏱ {timemark.split('.')[0]} {/* Chỉ hiển thị HH:MM:SS, bỏ milliseconds */}
-                    </span>
-                  )}
+                  <span>{etaSeconds > 0 ? `CÒN LẠI: ~${formatTime(etaSeconds)}` : 'ĐANG KHỞI TẠO...'}</span>
                 </div>
               </div>
             )}
-
           </div>
         </div>
       </div>
