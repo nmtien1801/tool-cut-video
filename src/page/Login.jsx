@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import ApiAuth from '../api/ApiAuth';
 
 function Login() {
-    const [username, setUsername] = useState('');
+    const [userName, setUserName] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
@@ -17,18 +17,20 @@ function Login() {
         setError('');
 
         try {
-            // Gửi username và password lên API
-            const response = await ApiAuth.LoginApi({ username, password });
+            // Gửi userName và password lên API
+            const response = await ApiAuth.LoginApi({ userName, password });
 
             // Lưu user info vào context (không lưu localStorage)
             const userData = response.data?.DT || {};
-            if (userData) {
+            if (response.data.EC === 0 && userData) {
                 login(userData);
                 // Chuyển hướng đến dashboard sau khi đăng nhập thành công
                 navigate('/dashboard');
+            } else {
+                setError('Tài khoản hoặc mật khẩu không đúng. Vui lòng thử lại.');
             }
         } catch (err) {
-            setError(err.response?.data?.message || 'Đăng nhập thất bại. Vui lòng thử lại.');
+            setError('Đăng nhập thất bại. Vui lòng thử lại.');
             console.error('Login error:', err);
         } finally {
             setLoading(false);
@@ -54,13 +56,13 @@ function Login() {
                 <form onSubmit={handleLogin} className="space-y-4">
                     <div>
                         <label className="block text-gray-700 font-medium mb-2">
-                            username
+                            userName
                         </label>
                         <input
-                            //   type="username"
-                            value={username}
-                            onChange={(e) => setUsername(e.target.value)}
-                            placeholder="username"
+                            //   type="userName"
+                            value={userName}
+                            onChange={(e) => setUserName(e.target.value)}
+                            placeholder="userName"
                             required
                             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
