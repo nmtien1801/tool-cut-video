@@ -56,13 +56,13 @@ function Login() {
                 <form onSubmit={handleLogin} className="space-y-4">
                     <div>
                         <label className="block text-gray-700 font-medium mb-2">
-                            userName
+                            Tài khoản
                         </label>
                         <input
                             //   type="userName"
                             value={userName}
                             onChange={(e) => setUserName(e.target.value)}
-                            placeholder="userName"
+                            placeholder="Nhập tài khoản"
                             required
                             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
