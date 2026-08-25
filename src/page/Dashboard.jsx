@@ -24,12 +24,13 @@ function Dashboard() {
   const [aspectRatio, setAspectRatio] = useState('original');
   const [encoderName, setEncoderName] = useState('đang kiểm tra...');
 
-  // --- Cấu hình tự động phiên dịch kiểu YouTube ---
+  // --- Cấu hình tự động phiên dịch (Mặc định: Tiếng Việt) ---
   const [enableAutoSub, setEnableAutoSub] = useState(false);
-  const [sourceLang, setSourceLang] = useState('auto');
+  const [sourceLang, setSourceLang] = useState('vi');
   const [targetLang, setTargetLang] = useState('vi');
+  const [enableSubtitleBg, setEnableSubtitleBg] = useState(true);
 
-  // --- Trạng thái tiến độ tạo phụ đề (tách riêng khỏi % cắt/encode video) ---
+  // --- Trạng thái tiến độ tạo phụ đề ---
   const [subtitleStage, setSubtitleStage] = useState(null);
   const [subtitleDetail, setSubtitleDetail] = useState('');
 
@@ -130,6 +131,7 @@ function Dashboard() {
         enabled: enableAutoSub,
         sourceLang,
         targetLang,
+        exportGreenScreen: enableSubtitleBg
       }
     };
 
@@ -218,10 +220,10 @@ function Dashboard() {
                         onChange={(e) => setSourceLang(e.target.value)}
                         className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs text-white"
                       >
-                        <option value="auto">Tự động nhận diện</option>
+                        <option value="vi">Tiếng Việt (Mặc định)</option>
                         <option value="en">Tiếng Anh</option>
                         <option value="zh">Tiếng Trung</option>
-                        <option value="vi">Tiếng Việt</option>
+                        <option value="auto">Tự động nhận diện</option>
                       </select>
                     </div>
                     <div>
@@ -237,6 +239,16 @@ function Dashboard() {
                       </select>
                     </div>
                   </div>
+
+                  <label className="flex items-center space-x-2 pt-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={enableSubtitleBg}
+                      onChange={(e) => setEnableSubtitleBg(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-600 bg-slate-900 text-blue-500 focus:ring-blue-500"
+                    />
+                    <span className="text-xs font-medium text-slate-300">Thêm nền xanh mờ dưới đáy cho phụ đề</span>
+                  </label>
                 </div>
               )}
             </div>

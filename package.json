@@ -33,17 +33,10 @@
       "output": "release"
     },
     "asar": true,
-    "extraResources": [
-      {
-        "from": "resources/ffmpeg.exe",
-        "to": "ffmpeg.exe"
-      },
-      {
-        "from": "resources/ffprobe.exe",
-        "to": "ffprobe.exe"
-      }
-    ],
     "asarUnpack": [
+      "electron/**/*",
+      "**/node_modules/@xenova/transformers/**/*",
+      "**/node_modules/onnxruntime-node/**/*",
       "**/node_modules/ffmpeg-static/ffmpeg.exe",
       "**/node_modules/ffprobe-static/bin/**/*"
     ]

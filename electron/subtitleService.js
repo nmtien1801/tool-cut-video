@@ -19,7 +19,7 @@ import path from "path";
 import { execFile } from "child_process";
 import util from "util";
 import { pipeline } from "@xenova/transformers";
-import { decodeWavToFloat32 } from "../src/components/wavDecoder.js";
+import { decodeWavToFloat32 } from "./wavDecoder.js";
 
 const execFileAsync = util.promisify(execFile);
 
