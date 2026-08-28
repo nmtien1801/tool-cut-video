@@ -20,6 +20,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "!electron/**/*.map",
       "package.json"
     ],
     "extraMetadata": {
@@ -29,28 +30,25 @@
       "target": "nsis",
       "artifactName": "${productName}.${ext}"
     },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "differentialPackage": false
+    },
+    "compression": "maximum",
     "directories": {
       "output": "release"
     },
     "asar": true,
-    "extraResources": [
-      {
-        "from": "resources/ffmpeg.exe",
-        "to": "ffmpeg.exe"
-      },
-      {
-        "from": "resources/ffprobe.exe",
-        "to": "ffprobe.exe"
-      }
-    ],
     "asarUnpack": [
       "electron/**/*",
       "**/node_modules/@xenova/transformers/**/*",
-      "**/node_modules/onnxruntime-node/**/*"
+      "**/node_modules/onnxruntime-node/bin/napi-v3/win32/x64/**/*",
+      "**/node_modules/ffmpeg-static/ffmpeg.exe",
+      "**/node_modules/ffprobe-static/bin/win32/x64/ffprobe.exe"
     ]
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.1.16",
     "@xenova/transformers": "^2.17.2",
     "axios": "^1.6.0",
     "electron-is-dev": "^3.0.1",
@@ -59,11 +57,9 @@
     "fluent-ffmpeg": "^2.1.2"
   },
   "devDependencies": {
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "react-router-dom": "^6.20.0",
     "@eslint/js": "^9.39.4",
     "@tailwindcss/postcss": "^4.1.16",
+    "@tailwindcss/vite": "^4.1.16",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
@@ -74,6 +70,9 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-router-dom": "^6.20.0",
     "tailwindcss": "^4.1.16",
     "vite": "^8.0.4",
     "wait-on": "^9.0.4"
