@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "electron:dev": "cross-env NODE_ENV=development electron .",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && cross-env NODE_OPTIONS=--max-old-space-size=4096 electron-builder"
   },
   "description": "Automation Tool",
   "author": "Nguyen Minh Tien",
@@ -35,7 +35,7 @@
       "allowToChangeInstallationDirectory": true,
       "differentialPackage": false
     },
-    "compression": "maximum",
+    "compression": "normal",
     "directories": {
       "output": "release"
     },
