@@ -8,7 +8,23 @@ const SUBTITLE_STAGE_LABELS = {
   'loading-model': 'Đang tải mô hình AI (chỉ lần đầu, có thể mất vài phút)...',
   'transcribing': 'Đang nhận diện giọng nói...',
   'translating': 'Đang dịch phụ đề...',
-  'subtitle-done': 'Đã tạo xong phụ đề, đang xử lý video...',
+  'subtitle-done': 'Đã tạo xong phụ đề...',
+};
+
+// --- HÀM TIỆN ÍCH PARSE / BUILD SRT ---
+const parseSRT = (srtString) => {
+  return srtString.trim().split(/\n\r?\n/).map(block => {
+    const lines = block.split('\n');
+    const id = lines[0];
+    const time = lines[1];
+    const text = lines.slice(2).join('\n');
+    const [start, end] = time ? time.split(' --> ') : ['', ''];
+    return { id, start, end, text };
+  }).filter(sub => sub.id && sub.start);
+};
+
+const buildSRT = (subs) => {
+  return subs.map(sub => `${sub.id}\n${sub.start} --> ${sub.end}\n${sub.text}`).join('\n\n');
 };
 
 function Dashboard() {
@@ -23,15 +39,17 @@ function Dashboard() {
   const [videoPreviewUrl, setVideoPreviewUrl] = useState(null);
   const [aspectRatio, setAspectRatio] = useState('original');
 
-  // --- Cấu hình tự động phiên dịch (Mặc định: Tiếng Việt) ---
+  // --- Cấu hình tự động phiên dịch ---
   const [enableAutoSub, setEnableAutoSub] = useState(false);
   const [sourceLang, setSourceLang] = useState('vi');
   const [targetLang, setTargetLang] = useState('vi');
   const [enableSubtitleBg, setEnableSubtitleBg] = useState(true);
 
-  // --- Trạng thái tiến độ tạo phụ đề ---
+  // --- Trạng thái Phụ đề chỉnh sửa ---
   const [subtitleStage, setSubtitleStage] = useState(null);
   const [subtitleDetail, setSubtitleDetail] = useState('');
+  const [generatingSub, setGeneratingSub] = useState(false);
+  const [subtitleSegments, setSubtitleSegments] = useState([]); // Chứa mảng data phụ đề để sửa
 
   const navigate = useNavigate();
   const { logout } = useAuth();
@@ -47,7 +65,6 @@ function Dashboard() {
     });
     const removeSubtitleListener = window.electron.onSubtitleProgress((data) => {
       setSubtitleStage(data.stage);
-
       if (data.stage === 'translating' && data.total) {
         setSubtitleDetail(`${data.index}/${data.total} câu`);
       } else if (data.stage === 'loading-model' && data.model) {
@@ -66,6 +83,7 @@ function Dashboard() {
 
   const handleSelectFile = async () => {
     setLoading(true);
+    setSubtitleSegments([]); // Reset sub khi chọn file mới
     try {
       const res = await window.electron.selectVideo();
       if (res?.success) {
@@ -111,23 +129,58 @@ function Dashboard() {
     return new Date(s * 1000).toISOString().substr(11, 8);
   };
 
+  // --- HÀM TẠO PHỤ ĐỀ (BƯỚC 1) ---
+  const handleGenerateSubtitles = async () => {
+    if (!selectedFile) return;
+    setGeneratingSub(true);
+    setSubtitleStage('extracting-audio');
+
+    try {
+      const res = await window.electron.generateSubtitlesOnly({
+        inputPath: selectedFile.filePath,
+        sourceLang,
+        targetLang
+      });
+
+      if (res.success) {
+        const parsed = parseSRT(res.srtContent);
+        setSubtitleSegments(parsed);
+      } else {
+        alert("Lỗi tạo phụ đề: " + res.message);
+      }
+    } catch (error) {
+      alert("Lỗi kết nối AI: " + error.message);
+    } finally {
+      setGeneratingSub(false);
+      setSubtitleStage(null);
+      setSubtitleDetail('');
+    }
+  };
+
+  // --- HÀM CẬP NHẬT TEXT PHỤ ĐỀ ---
+  const handleSubtitleTextChange = (id, newText) => {
+    setSubtitleSegments(prev => prev.map(sub => sub.id === id ? { ...sub, text: newText } : sub));
+  };
+
+  // --- HÀM XUẤT VIDEO (BƯỚC 2) ---
   const handleAction = async () => {
     if (!selectedFile || processing) return;
 
     setProcessing(true);
     setProgress(0);
     setEtaSeconds(null);
-    setSubtitleStage(enableAutoSub ? 'extracting-audio' : null);
-    setSubtitleDetail('');
+
+    const srtContent = enableAutoSub && subtitleSegments.length > 0
+      ? buildSRT(subtitleSegments)
+      : null;
 
     const payload = {
       inputPath: selectedFile.filePath,
       aspectRatio,
       segments,
       subtitles: {
-        enabled: enableAutoSub,
-        sourceLang,
-        targetLang,
+        enabled: enableAutoSub && !!srtContent,
+        srtContent: srtContent, // Truyền trực tiếp text đã sửa xuống Backend
         exportGreenScreen: enableSubtitleBg
       }
     };
@@ -138,11 +191,24 @@ function Dashboard() {
 
     alert(res.message);
     setProcessing(false);
-    setSubtitleStage(null);
+
+    // --- RESET DỮ LIỆU KHI XUẤT THÀNH CÔNG ---
+    if (res.success) {
+      setSelectedFile(null);
+      setVideoPreviewUrl(null);
+      setVideoDuration(0);
+      setSubtitleSegments([]);
+      setSegments([]);
+      setSegmentCount(2);
+      setProgress(0);
+      setEtaSeconds(null);
+      setEnableAutoSub(false); // Tuỳ chọn: Tắt luôn tick AI cho phiên làm việc mới
+    }
   };
 
   const totalSegDuration = segments.reduce((sum, s) => sum + (s.duration || 0), 0);
   const isOverDuration = totalSegDuration > videoDuration;
+
   return (
     <div className="min-h-screen bg-slate-900 text-white p-8 font-sans">
       <div className="max-w-6xl mx-auto flex items-center mb-10">
@@ -154,10 +220,12 @@ function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 max-w-6xl mx-auto">
+        {/* CỘT TRÁI - PREVIEW & FILE */}
         <div className="space-y-6">
-          <button onClick={handleSelectFile} disabled={processing || loading} className="w-full py-12 border-2 border-dashed border-slate-700 rounded-2xl hover:border-blue-500 text-slate-500 font-bold disabled:opacity-50">
+          <button onClick={handleSelectFile} disabled={processing || loading || generatingSub} className="w-full py-12 border-2 border-dashed border-slate-700 rounded-2xl hover:border-blue-500 text-slate-500 font-bold disabled:opacity-50">
             {loading ? 'ĐANG ĐỌC VIDEO...' : selectedFile ? `✅ ${selectedFile.fileName}` : '📁 CHỌN VIDEO ĐẦU VÀO'}
           </button>
+
           {selectedFile && (
             <div className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700 shadow-xl">
               <video src={videoPreviewUrl} controls className="w-full rounded-xl bg-black mb-4" style={{ maxHeight: '320px' }} />
@@ -167,8 +235,35 @@ function Dashboard() {
               </div>
             </div>
           )}
+
+          {/* EDITOR SỬA PHỤ ĐỀ BẰNG TAY (Hiển thị khi đã tạo xong) */}
+          {enableAutoSub && subtitleSegments.length > 0 && (
+            <div className="bg-slate-800/50 p-4 rounded-2xl border border-blue-500/30 flex flex-col h-96">
+              <h3 className="text-sm font-bold text-blue-400 mb-3 flex items-center justify-between">
+                <span>📝 CHỈNH SỬA PHỤ ĐỀ ({subtitleSegments.length} câu)</span>
+                <button onClick={() => setSubtitleSegments([])} className="text-xs text-red-400 hover:text-red-300">Hủy tạo lại</button>
+              </h3>
+              <div className="overflow-y-auto space-y-3 pr-2 custom-scrollbar flex-1">
+                {subtitleSegments.map((sub) => (
+                  <div key={sub.id} className="bg-slate-900 rounded-lg p-3 border border-slate-700 focus-within:border-blue-500">
+                    <div className="flex justify-between text-xs font-mono text-slate-500 mb-2">
+                      <span>Câu {sub.id}</span>
+                      <span>{sub.start} ➝ {sub.end}</span>
+                    </div>
+                    <textarea
+                      value={sub.text}
+                      onChange={(e) => handleSubtitleTextChange(sub.id, e.target.value)}
+                      className="w-full bg-transparent text-sm text-slate-200 outline-none resize-none"
+                      rows={2}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
+        {/* CỘT PHẢI - CẤU HÌNH & XUẤT */}
         <div className="space-y-6">
           <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 space-y-6">
             <div className="grid grid-cols-3 gap-3">
@@ -202,19 +297,15 @@ function Dashboard() {
                   onChange={(e) => setEnableAutoSub(e.target.checked)}
                   className="w-5 h-5 rounded border-slate-600 bg-slate-900 text-blue-500 focus:ring-blue-500"
                 />
-                <span className="text-sm font-bold text-slate-200">✨ Tự động nhận diện & Phiên dịch giọng nói</span>
+                <span className="text-sm font-bold text-slate-200">✨ Kèm Phụ Đề AI (Cần tạo & duyệt trước)</span>
               </label>
 
-              {enableAutoSub && (
+              {enableAutoSub && subtitleSegments.length === 0 && (
                 <div className="pl-8 space-y-3 bg-slate-900/40 p-3 rounded-xl border border-slate-800">
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-bold text-slate-400 mb-1">NGÔN NGỮ GỐC</label>
-                      <select
-                        value={sourceLang}
-                        onChange={(e) => setSourceLang(e.target.value)}
-                        className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs text-white"
-                      >
+                      <select value={sourceLang} onChange={(e) => setSourceLang(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs text-white">
                         <option value="vi">Tiếng Việt (Mặc định)</option>
                         <option value="en">Tiếng Anh</option>
                         <option value="zh">Tiếng Trung</option>
@@ -223,11 +314,7 @@ function Dashboard() {
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-slate-400 mb-1">DỊCH SANG</label>
-                      <select
-                        value={targetLang}
-                        onChange={(e) => setTargetLang(e.target.value)}
-                        className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs text-white"
-                      >
+                      <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs text-white">
                         <option value="vi">Tiếng Việt</option>
                         <option value="en">Tiếng Anh</option>
                         <option value="zh">Tiếng Trung</option>
@@ -235,32 +322,40 @@ function Dashboard() {
                     </div>
                   </div>
 
-                  <label className="flex items-center space-x-2 pt-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={enableSubtitleBg}
-                      onChange={(e) => setEnableSubtitleBg(e.target.checked)}
-                      className="w-4 h-4 rounded border-slate-600 bg-slate-900 text-blue-500 focus:ring-blue-500"
-                    />
+                  <label className="flex items-center space-x-2 pt-2 cursor-pointer pb-2">
+                    <input type="checkbox" checked={enableSubtitleBg} onChange={(e) => setEnableSubtitleBg(e.target.checked)} className="w-4 h-4 rounded border-slate-600 bg-slate-900 text-blue-500" />
                     <span className="text-xs font-medium text-slate-300">Thêm nền xanh mờ dưới đáy cho phụ đề</span>
                   </label>
+
+                  <button
+                    onClick={handleGenerateSubtitles}
+                    disabled={!selectedFile || generatingSub}
+                    className="w-full py-2.5 rounded-lg font-bold bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 transition-all text-sm"
+                  >
+                    {generatingSub ? `ĐANG XỬ LÝ AI...` : `🛠 1. TẠO & KIỂM TRA PHỤ ĐỀ TRƯỚC`}
+                  </button>
+
+                  {generatingSub && subtitleStage && (
+                    <div className="flex items-center gap-2 text-xs font-mono text-purple-400 mt-2">
+                      <span className="inline-block w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
+                      <span>{SUBTITLE_STAGE_LABELS[subtitleStage] || 'Đang xử lý phụ đề...'}</span>
+                      {subtitleDetail && <span className="text-purple-300">({subtitleDetail})</span>}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
-            <button onClick={handleAction} disabled={!selectedFile || isOverDuration || processing} className="w-full py-4 rounded-xl font-bold bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 transition-all shadow-lg shadow-blue-900/20">
-              {processing ? `ĐANG XỬ LÝ...` : `🚀 XUẤT VIDEO`}
+            <button
+              onClick={handleAction}
+              disabled={!selectedFile || isOverDuration || processing || generatingSub || (enableAutoSub && subtitleSegments.length === 0)}
+              className="w-full py-4 rounded-xl font-bold bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 transition-all shadow-lg shadow-blue-900/20"
+            >
+              {processing ? `ĐANG XỬ LÝ VIDEO...` : enableAutoSub ? `🚀 2. ÁP DỤNG PHỤ ĐỀ & XUẤT VIDEO` : `🚀 XUẤT VIDEO`}
             </button>
 
             {processing && (
-              <div className="space-y-2">
-                {enableAutoSub && subtitleStage && subtitleStage !== 'subtitle-done' && (
-                  <div className="flex items-center gap-2 text-xs font-mono text-purple-400 bg-purple-500/10 border border-purple-500/30 rounded-lg px-3 py-2">
-                    <span className="inline-block w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
-                    <span>{SUBTITLE_STAGE_LABELS[subtitleStage] || 'Đang xử lý phụ đề...'}</span>
-                    {subtitleDetail && <span className="text-purple-300">({subtitleDetail})</span>}
-                  </div>
-                )}
+              <div className="space-y-2 mt-4">
                 <div className="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
                   <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${progress}%` }} />
                 </div>

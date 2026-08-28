@@ -8,10 +8,12 @@ contextBridge.exposeInMainWorld("electron", {
   selectVideo: () => ipcRenderer.invoke("select-video"),
 
   // Lấy thời lượng (duration) của video[cite: 3]
-  getVideoDuration: (filePath) => ipcRenderer.invoke("get-video-duration", filePath),
+  getVideoDuration: (filePath) =>
+    ipcRenderer.invoke("get-video-duration", filePath),
 
   // Cắt nhanh video[cite: 3]
-  trimMultipleSegments: (data) => ipcRenderer.invoke("trim-multiple-segments", data),
+  trimMultipleSegments: (data) =>
+    ipcRenderer.invoke("trim-multiple-segments", data),
 
   // Lắng nghe tiến độ cắt video (percent, eta)[cite: 3]
   onTrimProgress: (callback) => {
@@ -21,7 +23,8 @@ contextBridge.exposeInMainWorld("electron", {
   },
 
   // Xuất video theo tỉ lệ khung hình (Blur background)[cite: 3]
-  exportWithAspectRatio: (data) => ipcRenderer.invoke("export-with-aspect-ratio", data),
+  exportWithAspectRatio: (data) =>
+    ipcRenderer.invoke("export-with-aspect-ratio", data),
 
   // Lắng nghe tiến độ xuất video (percent, eta)[cite: 3]
   onExportProgress: (callback) => {
@@ -36,4 +39,8 @@ contextBridge.exposeInMainWorld("electron", {
     ipcRenderer.on("subtitle-progress", listener);
     return () => ipcRenderer.removeListener("subtitle-progress", listener);
   },
+
+  // Gọi AI tạo phụ đề và trả về text để sửa trên UI
+  generateSubtitlesOnly: (data) =>
+    ipcRenderer.invoke("generate-subtitles-only", data),
 });

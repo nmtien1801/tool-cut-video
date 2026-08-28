@@ -332,13 +332,11 @@ ipcMain.handle(
       const encoder = await detectHwEncoder();
       const isGpu = encoder !== "libx264";
 
+      // Đã sửa lỗi khai báo lặp ở đây
       let escapedSrtPath = null;
-      if (subtitles?.enabled) {
-        srtPath = await runSubtitleGeneration(
-          inputPath,
-          subtitles.sourceLang,
-          subtitles.targetLang,
-        );
+      if (subtitles?.enabled && subtitles?.srtContent) {
+        srtPath = path.join(os.tmpdir(), `custom_sub_trim_${Date.now()}.srt`);
+        fs.writeFileSync(srtPath, subtitles.srtContent, "utf8");
         escapedSrtPath = srtPath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
       }
 
@@ -359,18 +357,17 @@ ipcMain.handle(
           inputPath,
         ];
 
-        if (subtitles?.enabled) {
+        // Đảm bảo escapedSrtPath có tồn tại mới gán filter phụ đề
+        if (subtitles?.enabled && escapedSrtPath) {
           let filterComplex = `[0:v]format=yuva420p[base_v];`;
           let lastLayer = "[base_v]";
 
-          // Gradient xanh dương nhạt ở trên -> xanh đậm dần về dưới đáy video
           if (subtitles.exportGreenScreen) {
             filterComplex += `color=c=0x1a4b75:s=1920x300,format=yuva420p,geq=r='r(X,Y)':a='255*(Y/H)'[grad];`;
             filterComplex += `[base_v][grad]overlay=0:H-300:shortest=1[with_bg];`;
             lastLayer = "[with_bg]";
           }
 
-          // Chữ phụ đề vừa vặn (FontSize=18), viền nét mảnh
           filterComplex += `${lastLayer}subtitles=${escapedSrtPath}:force_style='FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1.5,MarginV=25'[outv]`;
 
           args.push(
@@ -430,7 +427,7 @@ ipcMain.handle(
       const isGpu = encoder !== "libx264";
       const outW = aspectRatio === "9:16" ? 1080 : 1920;
       const outH = aspectRatio === "9:16" ? 1920 : 1080;
-      const gradH = Math.floor(outH * 0.3); // Gradient phủ 30% đáy video
+      const gradH = Math.floor(outH * 0.3);
       const inputResolved = path.resolve(inputPath);
       const ratioTag = aspectRatio === "9:16" ? "9x16" : "16x9";
       const outputFolder = path.join(
@@ -442,12 +439,9 @@ ipcMain.handle(
         fs.mkdirSync(outputFolder, { recursive: true });
 
       let escapedSrtPath = null;
-      if (subtitles?.enabled) {
-        srtPath = await runSubtitleGeneration(
-          inputResolved,
-          subtitles.sourceLang,
-          subtitles.targetLang,
-        );
+      if (subtitles?.enabled && subtitles?.srtContent) {
+        srtPath = path.join(os.tmpdir(), `custom_sub_blur_${Date.now()}.srt`);
+        fs.writeFileSync(srtPath, subtitles.srtContent, "utf8");
         escapedSrtPath = srtPath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
       }
 
@@ -470,17 +464,16 @@ ipcMain.handle(
 
       let finalMap = "[out_base]";
 
+      // Đảm bảo escapedSrtPath có tồn tại mới gán filter phụ đề
       if (subtitles?.enabled && escapedSrtPath) {
         let overlayInput = "[out_base]";
 
-        // Gradient xanh dương đậm dần về đáy
         if (subtitles.exportGreenScreen) {
           filterComplex += `;color=c=0x1a4b75:s=${outW}x${gradH},format=yuva420p,geq=r='r(X,Y)':a='255*(Y/H)'[grad]`;
           filterComplex += `;[out_base][grad]overlay=0:H-${gradH}:shortest=1[with_bg]`;
           overlayInput = "[with_bg]";
         }
 
-        // Chữ phụ đề vừa vặn (FontSize=22)
         filterComplex += `;${overlayInput}subtitles=${escapedSrtPath}:force_style='FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,MarginV=30'[out_sub]`;
         finalMap = "[out_sub]";
       }
@@ -513,7 +506,15 @@ ipcMain.handle(
             "-threads",
             Math.max(1, Math.floor(os.cpus().length / 2)).toString(),
           );
-        args.push("-pix_fmt", "yuv420p", "-movflags", "+faststart", tempPath);
+        args.push(
+          "-pix_fmt",
+          "yuv420p",
+          "-f",
+          "mp4",
+          "-movflags",
+          "+faststart",
+          tempPath,
+        );
 
         try {
           await runFfmpeg(args, seg.duration, (pct, speed) =>
@@ -538,6 +539,23 @@ ipcMain.handle(
     } catch (error) {
       if (srtPath && fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
       return { success: false, message: "Lỗi xuất video: " + error.message };
+    }
+  },
+);
+
+// TẠO VÀ TRẢ VỀ PHỤ ĐỀ CHO FRONTEND SỬA
+ipcMain.handle(
+  "generate-subtitles-only",
+  async (event, { inputPath, sourceLang, targetLang }) => {
+    let srtPath = null;
+    try {
+      srtPath = await runSubtitleGeneration(inputPath, sourceLang, targetLang);
+      const srtContent = fs.readFileSync(srtPath, "utf8");
+      fs.unlinkSync(srtPath); // Xóa file tạm ngay sau khi đọc
+      return { success: true, srtContent };
+    } catch (error) {
+      if (srtPath && fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
+      return { success: false, message: error.message };
     }
   },
 );
