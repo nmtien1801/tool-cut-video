@@ -1,7 +1,7 @@
 {
   "name": "my-tool",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
@@ -10,7 +10,9 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "electron:dev": "cross-env NODE_ENV=development electron .",
-    "dist": "npm run build && cross-env NODE_OPTIONS=--max-old-space-size=4096 electron-builder"
+    "dist": "npm run build && cross-env NODE_OPTIONS=--max-old-space-size=4096 electron-builder",
+    "dist:win": "npm run build && cross-env NODE_OPTIONS=--max-old-space-size=4096 electron-builder --win",
+    "dist:mac": "npm run build && cross-env NODE_OPTIONS=--max-old-space-size=4096 electron-builder --mac"
   },
   "description": "Automation Tool",
   "author": "Nguyen Minh Tien",
@@ -28,7 +30,29 @@
     },
     "win": {
       "target": "nsis",
-      "artifactName": "${productName}.${ext}"
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Mac-${version}-${arch}.${ext}",
+      "category": "public.app-category.video",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
     },
     "nsis": {
       "oneClick": false,
@@ -43,9 +67,9 @@
     "asarUnpack": [
       "electron/**/*",
       "**/node_modules/@xenova/transformers/**/*",
-      "**/node_modules/onnxruntime-node/bin/napi-v3/win32/x64/**/*",
-      "**/node_modules/ffmpeg-static/ffmpeg.exe",
-      "**/node_modules/ffprobe-static/bin/win32/x64/ffprobe.exe"
+      "**/node_modules/onnxruntime-node/bin/**/*",
+      "**/node_modules/ffmpeg-static/ffmpeg*",
+      "**/node_modules/ffprobe-static/bin/**/*"
     ]
   },
   "dependencies": {

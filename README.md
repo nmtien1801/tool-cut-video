@@ -6,3 +6,6 @@ npm run build
 cd C:\Users\Admin\Desktop\test\tool\tool-cutVideo
 npm run dist
 npm run electron:dev
+
+git tag v1.0.0
+git push origin v1.0.0
