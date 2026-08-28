@@ -7,7 +7,6 @@ import ffmpeg from "fluent-ffmpeg";
 import ffmpegStatic from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
 import { execFile } from "child_process";
-import { generateSubtitles } from "./subtitleService.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -138,7 +137,7 @@ const detectHwEncoder = async () => {
   for (const candidate of HW_CANDIDATES) {
     try {
       await new Promise((resolve, reject) => {
-        execFile(bin, ["-y", ...candidate.args], { timeout: 8000 }, (error) => {
+        execFile(bin, ["-y", ...candidate.args], { timeout: 2500 }, (error) => {
           if (error) reject(error);
           else resolve();
         });
@@ -250,10 +249,28 @@ const runFfmpeg = (args, segmentDuration, onProgress) => {
   });
 };
 
+const moveFileWithRetry = async (sourcePath, targetPath) => {
+  let lastError;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    try {
+      await fs.promises.rename(sourcePath, targetPath);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!["EBUSY", "EPERM", "EACCES"].includes(error.code)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  throw new Error(
+    `Không thể ghi file output sau khi chờ mở khóa: ${lastError?.message}`,
+  );
+};
+
 // ─────────────────────────────────────────────
 // PHỤ ĐỀ / AUTO-TRANSLATE
 // ─────────────────────────────────────────────
 const runSubtitleGeneration = async (inputPath, sourceLang, targetLang) => {
+  const { generateSubtitles } = await import("./subtitleService.js");
   return generateSubtitles({
     ffmpegBin: fixPathForAsar(ffmpegPath),
     inputPath,
@@ -331,6 +348,7 @@ ipcMain.handle(
 
       const tasks = segments.map((seg, index) => async () => {
         const outPath = path.join(outputBase, `cut_${Date.now()}_${index}.mp4`);
+        const tempPath = `${outPath}.part.mp4`;
         const args = [
           "-y",
           "-ss",
@@ -374,10 +392,16 @@ ipcMain.handle(
           args.push("-c", "copy", "-map", "0");
         }
 
-        args.push("-movflags", "+faststart", outPath);
-        await runFfmpeg(args, seg.duration, (pct, speed) =>
-          merger.update(index, pct, speed),
-        );
+        args.push("-movflags", "+faststart", tempPath);
+        try {
+          await runFfmpeg(args, seg.duration, (pct, speed) =>
+            merger.update(index, pct, speed),
+          );
+          await moveFileWithRetry(tempPath, outPath);
+        } catch (error) {
+          if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true });
+          throw error;
+        }
       });
 
       const maxWorkers =
@@ -467,6 +491,7 @@ ipcMain.handle(
 
       const tasks = segments.map((seg, index) => async () => {
         const outPath = path.join(outputFolder, `segment_${index + 1}.mp4`);
+        const tempPath = `${outPath}.part.mp4`;
         const args = [
           "-y",
           "-ss",
@@ -488,11 +513,17 @@ ipcMain.handle(
             "-threads",
             Math.max(1, Math.floor(os.cpus().length / 2)).toString(),
           );
-        args.push("-pix_fmt", "yuv420p", "-movflags", "+faststart", outPath);
+        args.push("-pix_fmt", "yuv420p", "-movflags", "+faststart", tempPath);
 
-        await runFfmpeg(args, seg.duration, (pct, speed) =>
-          merger.update(index, pct, speed),
-        );
+        try {
+          await runFfmpeg(args, seg.duration, (pct, speed) =>
+            merger.update(index, pct, speed),
+          );
+          await moveFileWithRetry(tempPath, outPath);
+        } catch (error) {
+          if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true });
+          throw error;
+        }
       });
 
       await runConcurrent(tasks, Math.min(segments.length, isGpu ? 2 : 1));

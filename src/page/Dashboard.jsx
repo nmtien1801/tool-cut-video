@@ -22,7 +22,6 @@ function Dashboard() {
   const [etaSeconds, setEtaSeconds] = useState(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState(null);
   const [aspectRatio, setAspectRatio] = useState('original');
-  const [encoderName, setEncoderName] = useState('đang kiểm tra...');
 
   // --- Cấu hình tự động phiên dịch (Mặc định: Tiếng Việt) ---
   const [enableAutoSub, setEnableAutoSub] = useState(false);
@@ -38,8 +37,6 @@ function Dashboard() {
   const { logout } = useAuth();
 
   useEffect(() => {
-    window.electron.detectHwEncoder().then(enc => setEncoderName(enc));
-
     const removeTrimListener = window.electron.onTrimProgress((data) => {
       setProgress(Math.round(data.percent || 0));
       if (data.eta !== undefined) setEtaSeconds(data.eta);
@@ -146,22 +143,20 @@ function Dashboard() {
 
   const totalSegDuration = segments.reduce((sum, s) => sum + (s.duration || 0), 0);
   const isOverDuration = totalSegDuration > videoDuration;
-  const isGpu = encoderName !== "libx264" && !encoderName.includes("kiểm tra");
-
   return (
     <div className="min-h-screen bg-slate-900 text-white p-8 font-sans">
       <div className="max-w-6xl mx-auto flex items-center mb-10">
         <h1 className="text-3xl font-black text-blue-500 mr-auto">CUT VIDEO PRO</h1>
-        <div className={`mr-4 px-4 py-1.5 rounded-lg border text-xs font-bold transition-all ${isGpu ? 'bg-purple-500/20 border-purple-500/50 text-purple-400' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
-          {isGpu ? `⚡ GPU: ${encoderName.toUpperCase()}` : `🖥 CPU: LIBX264`}
+        <div className="mr-4 px-4 py-1.5 rounded-lg border bg-slate-800 border-slate-700 text-slate-400 text-xs font-bold">
+          TỰ ĐỘNG TỐI ƯU ENCODER
         </div>
         <button onClick={() => { logout(); navigate('/login'); }} className="text-red-400 border border-red-500/50 px-4 py-1.5 rounded-lg hover:bg-red-500 hover:text-white transition-all">Đăng Xuất</button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 max-w-6xl mx-auto">
         <div className="space-y-6">
-          <button onClick={handleSelectFile} disabled={processing} className="w-full py-12 border-2 border-dashed border-slate-700 rounded-2xl hover:border-blue-500 text-slate-500 font-bold disabled:opacity-50">
-            {selectedFile ? `✅ ${selectedFile.fileName}` : '📁 CHỌN VIDEO ĐẦU VÀO'}
+          <button onClick={handleSelectFile} disabled={processing || loading} className="w-full py-12 border-2 border-dashed border-slate-700 rounded-2xl hover:border-blue-500 text-slate-500 font-bold disabled:opacity-50">
+            {loading ? 'ĐANG ĐỌC VIDEO...' : selectedFile ? `✅ ${selectedFile.fileName}` : '📁 CHỌN VIDEO ĐẦU VÀO'}
           </button>
           {selectedFile && (
             <div className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700 shadow-xl">
