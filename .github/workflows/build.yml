@@ -1,33 +1,30 @@
-name: Build and Release
+name: Build and Release Electron App
 
 on:
   push:
     tags:
-      - 'v*'
-  workflow_dispatch:
-
-permissions:
-  contents: write
+      - "v*"
 
 jobs:
   release:
     runs-on: ${{ matrix.os }}
+
     strategy:
-      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
 
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
+          cache: "npm"
 
-      - name: Install Dependencies
-        run: npm install
+      - name: Install dependencies
+        run: npm ci
 
       # Build cho Windows
       - name: Build & Package Windows
@@ -36,8 +33,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_OPTIONS: --max-old-space-size=4096
+          VITE_BACKEND_URL: http://161.248.4.175:8081/api
 
-      # Build cho macOS
+      # Build cho macOS (Tắt bắt buộc Apple Code Signing)
       - name: Build & Package macOS
         if: matrix.os == 'macos-latest'
         run: npm run dist:mac
@@ -45,11 +43,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
           NODE_OPTIONS: --max-old-space-size=4096
+          VITE_BACKEND_URL: http://161.248.4.175:8081/api
 
-      # Đẩy file cài đặt lên Releases
-      - name: Upload Binaries to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Upload Artifacts to Release
         uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
             release/*.exe
