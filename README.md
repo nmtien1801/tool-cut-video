@@ -9,3 +9,4 @@ npm run electron:dev
 
 git tag v1.0.0
 git push origin v1.0.0
+Chỉ cần vào System Settings -> Privacy & Security và nhấn Open Anyway

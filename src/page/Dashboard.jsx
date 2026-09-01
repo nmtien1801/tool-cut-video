@@ -170,17 +170,14 @@ function Dashboard() {
     setProgress(0);
     setEtaSeconds(null);
 
-    const srtContent = enableAutoSub && subtitleSegments.length > 0
-      ? buildSRT(subtitleSegments)
-      : null;
-
+    // Truyền nguyên mảng dữ liệu phụ đề thô (chưa ghép thành chuỗi) xuống Backend
     const payload = {
       inputPath: selectedFile.filePath,
       aspectRatio,
       segments,
       subtitles: {
-        enabled: enableAutoSub && !!srtContent,
-        srtContent: srtContent, // Truyền trực tiếp text đã sửa xuống Backend
+        enabled: enableAutoSub && subtitleSegments.length > 0,
+        rawSegments: subtitleSegments, // <-- THAY ĐỔI Ở ĐÂY
         exportGreenScreen: enableSubtitleBg
       }
     };
@@ -202,7 +199,7 @@ function Dashboard() {
       setSegmentCount(2);
       setProgress(0);
       setEtaSeconds(null);
-      setEnableAutoSub(false); // Tuỳ chọn: Tắt luôn tick AI cho phiên làm việc mới
+      setEnableAutoSub(false);
     }
   };
 

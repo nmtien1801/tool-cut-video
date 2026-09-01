@@ -130,6 +130,56 @@ const HW_CANDIDATES = [
   },
 ];
 
+// --- HÀM HỖ TRỢ XỬ LÝ THỜI GIAN PHỤ ĐỀ ---
+const timeStringToSeconds = (timeStr) => {
+  if (!timeStr) return 0;
+  const [hms, ms] = timeStr.split(",");
+  const [h, m, s] = hms.split(":");
+  return (
+    parseInt(h) * 3600 +
+    parseInt(m) * 60 +
+    parseInt(s) +
+    parseInt(ms || 0) / 1000
+  );
+};
+
+const secondsToTimeString = (totalSeconds) => {
+  const clamped = Math.max(0, totalSeconds);
+  const hh = String(Math.floor(clamped / 3600)).padStart(2, "0");
+  const mm = String(Math.floor((clamped % 3600) / 60)).padStart(2, "0");
+  const ss = String(Math.floor(clamped % 60)).padStart(2, "0");
+  const ms = String(Math.round((clamped % 1) * 1000)).padStart(3, "0");
+  return `${hh}:${mm}:${ss},${ms}`;
+};
+
+const generateSegmentSrt = (rawSegments, segStartTime, segDuration) => {
+  const segEndSec = segStartTime + segDuration;
+  const filteredSubs = rawSegments
+    .map((sub) => {
+      const subStartSec = timeStringToSeconds(sub.start);
+      const subEndSec = timeStringToSeconds(sub.end);
+
+      // Nếu phụ đề nằm ngoài khoảng cắt thì bỏ qua
+      if (subEndSec <= segStartTime || subStartSec >= segEndSec) return null;
+
+      // Dịch chuyển thời gian phụ đề về hệ quy chiếu 00:00 của video bị cắt
+      const newStartSec = Math.max(0, subStartSec - segStartTime);
+      const newEndSec = Math.min(segDuration, subEndSec - segStartTime);
+
+      return {
+        ...sub,
+        start: secondsToTimeString(newStartSec),
+        end: secondsToTimeString(newEndSec),
+      };
+    })
+    .filter(Boolean);
+
+  // Nối lại thành định dạng SRT chuẩn
+  return filteredSubs
+    .map((sub, i) => `${i + 1}\n${sub.start} --> ${sub.end}\n${sub.text}`)
+    .join("\n\n");
+};
+
 const detectHwEncoder = async () => {
   if (cachedEncoder) return cachedEncoder;
   const bin = fixPathForAsar(ffmpegPath);
@@ -319,7 +369,6 @@ ipcMain.handle("get-video-duration", async (event, inputPath) => {
 ipcMain.handle(
   "trim-multiple-segments",
   async (event, { inputPath, segments, subtitles }) => {
-    let srtPath = null;
     try {
       const outputBase = path.join(
         os.homedir(),
@@ -332,14 +381,6 @@ ipcMain.handle(
       const encoder = await detectHwEncoder();
       const isGpu = encoder !== "libx264";
 
-      // Đã sửa lỗi khai báo lặp ở đây
-      let escapedSrtPath = null;
-      if (subtitles?.enabled && subtitles?.srtContent) {
-        srtPath = path.join(os.tmpdir(), `custom_sub_trim_${Date.now()}.srt`);
-        fs.writeFileSync(srtPath, subtitles.srtContent, "utf8");
-        escapedSrtPath = srtPath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
-      }
-
       const merger = new ProgressMerger(segments, (pct, eta) => {
         mainWindow.webContents.send("trim-progress", { percent: pct, eta });
       });
@@ -347,6 +388,27 @@ ipcMain.handle(
       const tasks = segments.map((seg, index) => async () => {
         const outPath = path.join(outputBase, `cut_${Date.now()}_${index}.mp4`);
         const tempPath = `${outPath}.part.mp4`;
+
+        let srtPath = null;
+        let escapedSrtPath = null;
+
+        // Tạo file SRT riêng ứng với thời gian của segment này
+        if (subtitles?.enabled && subtitles?.rawSegments) {
+          const srtContent = generateSegmentSrt(
+            subtitles.rawSegments,
+            seg.startTime,
+            seg.duration,
+          );
+          if (srtContent.trim() !== "") {
+            srtPath = path.join(
+              os.tmpdir(),
+              `custom_sub_trim_${index}_${Date.now()}.srt`,
+            );
+            fs.writeFileSync(srtPath, srtContent, "utf8");
+            escapedSrtPath = srtPath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
+          }
+        }
+
         const args = [
           "-y",
           "-ss",
@@ -357,8 +419,7 @@ ipcMain.handle(
           inputPath,
         ];
 
-        // Đảm bảo escapedSrtPath có tồn tại mới gán filter phụ đề
-        if (subtitles?.enabled && escapedSrtPath) {
+        if (escapedSrtPath) {
           let filterComplex = `[0:v]format=yuva420p[base_v];`;
           let lastLayer = "[base_v]";
 
@@ -390,6 +451,7 @@ ipcMain.handle(
         }
 
         args.push("-movflags", "+faststart", tempPath);
+
         try {
           await runFfmpeg(args, seg.duration, (pct, speed) =>
             merger.update(index, pct, speed),
@@ -398,6 +460,9 @@ ipcMain.handle(
         } catch (error) {
           if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true });
           throw error;
+        } finally {
+          // Dọn dẹp file SRT của riêng đoạn này sau khi cắt xong
+          if (srtPath && fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
         }
       });
 
@@ -408,10 +473,8 @@ ipcMain.handle(
       mainWindow.webContents.send("trim-progress", { percent: 100, eta: 0 });
       shell.openPath(outputBase);
 
-      if (srtPath && fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
       return { success: true, message: "Cắt và xử lý phụ đề hoàn tất!" };
     } catch (error) {
-      if (srtPath && fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
       return { success: false, message: "Lỗi cắt video: " + error.message };
     }
   },
@@ -421,7 +484,6 @@ ipcMain.handle(
 ipcMain.handle(
   "export-with-aspect-ratio",
   async (event, { inputPath, aspectRatio, segments, subtitles }) => {
-    let srtPath = null;
     try {
       const encoder = await detectHwEncoder();
       const isGpu = encoder !== "libx264";
@@ -438,13 +500,6 @@ ipcMain.handle(
       if (!fs.existsSync(outputFolder))
         fs.mkdirSync(outputFolder, { recursive: true });
 
-      let escapedSrtPath = null;
-      if (subtitles?.enabled && subtitles?.srtContent) {
-        srtPath = path.join(os.tmpdir(), `custom_sub_blur_${Date.now()}.srt`);
-        fs.writeFileSync(srtPath, subtitles.srtContent, "utf8");
-        escapedSrtPath = srtPath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
-      }
-
       const hasAudio = await new Promise((resolve) => {
         ffmpeg.ffprobe(inputResolved, (err, meta) =>
           resolve(
@@ -456,28 +511,6 @@ ipcMain.handle(
       const bgW = Math.floor(outW / 4),
         bgH = Math.floor(outH / 4);
 
-      let filterComplex =
-        `[0:v]split=2[bg_in][fg_in];` +
-        `[bg_in]scale=${bgW}:${bgH}:force_original_aspect_ratio=increase,crop=${bgW}:${bgH},boxblur=10:5,scale=${outW}:${outH}[bg_blur];` +
-        `[fg_in]scale=${outW}:${outH}:force_original_aspect_ratio=decrease[fg_scaled];` +
-        `[bg_blur][fg_scaled]overlay=(W-w)/2:(H-h)/2[out_base]`;
-
-      let finalMap = "[out_base]";
-
-      // Đảm bảo escapedSrtPath có tồn tại mới gán filter phụ đề
-      if (subtitles?.enabled && escapedSrtPath) {
-        let overlayInput = "[out_base]";
-
-        if (subtitles.exportGreenScreen) {
-          filterComplex += `;color=c=0x1a4b75:s=${outW}x${gradH},format=yuva420p,geq=r='r(X,Y)':a='255*(Y/H)'[grad]`;
-          filterComplex += `;[out_base][grad]overlay=0:H-${gradH}:shortest=1[with_bg]`;
-          overlayInput = "[with_bg]";
-        }
-
-        filterComplex += `;${overlayInput}subtitles=${escapedSrtPath}:force_style='FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,MarginV=30'[out_sub]`;
-        finalMap = "[out_sub]";
-      }
-
       const merger = new ProgressMerger(segments, (pct, eta) => {
         mainWindow.webContents.send("export-progress", { percent: pct, eta });
       });
@@ -485,6 +518,47 @@ ipcMain.handle(
       const tasks = segments.map((seg, index) => async () => {
         const outPath = path.join(outputFolder, `segment_${index + 1}.mp4`);
         const tempPath = `${outPath}.part.mp4`;
+
+        let srtPath = null;
+        let escapedSrtPath = null;
+
+        // Tạo file SRT khớp thời gian
+        if (subtitles?.enabled && subtitles?.rawSegments) {
+          const srtContent = generateSegmentSrt(
+            subtitles.rawSegments,
+            seg.startTime,
+            seg.duration,
+          );
+          if (srtContent.trim() !== "") {
+            srtPath = path.join(
+              os.tmpdir(),
+              `custom_sub_blur_${index}_${Date.now()}.srt`,
+            );
+            fs.writeFileSync(srtPath, srtContent, "utf8");
+            escapedSrtPath = srtPath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
+          }
+        }
+
+        // Tạo bộ lọc filter_complex động cho từng segment
+        let filterComplex =
+          `[0:v]split=2[bg_in][fg_in];` +
+          `[bg_in]scale=${bgW}:${bgH}:force_original_aspect_ratio=increase,crop=${bgW}:${bgH},boxblur=10:5,scale=${outW}:${outH}[bg_blur];` +
+          `[fg_in]scale=${outW}:${outH}:force_original_aspect_ratio=decrease[fg_scaled];` +
+          `[bg_blur][fg_scaled]overlay=(W-w)/2:(H-h)/2[out_base]`;
+
+        let finalMap = "[out_base]";
+
+        if (escapedSrtPath) {
+          let overlayInput = "[out_base]";
+          if (subtitles.exportGreenScreen) {
+            filterComplex += `;color=c=0x1a4b75:s=${outW}x${gradH},format=yuva420p,geq=r='r(X,Y)':a='255*(Y/H)'[grad]`;
+            filterComplex += `;[out_base][grad]overlay=0:H-${gradH}:shortest=1[with_bg]`;
+            overlayInput = "[with_bg]";
+          }
+          filterComplex += `;${overlayInput}subtitles=${escapedSrtPath}:force_style='FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,MarginV=30'[out_sub]`;
+          finalMap = "[out_sub]";
+        }
+
         const args = [
           "-y",
           "-ss",
@@ -498,6 +572,7 @@ ipcMain.handle(
           "-map",
           finalMap,
         ];
+
         if (hasAudio)
           args.push("-map", "0:a:0?", "-c:a", "aac", "-b:a", "192k");
         args.push("-c:v", encoder, ...getEncoderPreset(encoder));
@@ -524,6 +599,8 @@ ipcMain.handle(
         } catch (error) {
           if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true });
           throw error;
+        } finally {
+          if (srtPath && fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
         }
       });
 
@@ -531,13 +608,11 @@ ipcMain.handle(
       mainWindow.webContents.send("export-progress", { percent: 100, eta: 0 });
       shell.openPath(outputFolder);
 
-      if (srtPath && fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
       return {
         success: true,
         message: `Xuất thành công ${segments.length} đoạn kèm phụ đề!`,
       };
     } catch (error) {
-      if (srtPath && fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
       return { success: false, message: "Lỗi xuất video: " + error.message };
     }
   },

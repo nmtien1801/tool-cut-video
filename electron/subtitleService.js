@@ -1,16 +1,6 @@
 /**
  * subtitleService.js
  * Runs in the Electron MAIN process.
- *
- * Pipeline: video -> extract audio (ffmpeg, reuses your existing ffmpeg binary)
- * -> transcribe (local Whisper via @xenova/transformers) -> translate if
- * needed (local NLLB-200) -> real timestamped .srt file.
- *
- * 100% local/offline after the models are downloaded once (cached by
- * @xenova/transformers in the OS user cache dir). No API key needed.
- *
- * Install once:
- *   npm install @xenova/transformers
  */
 
 import fs from "fs";
@@ -23,25 +13,20 @@ import { decodeWavToFloat32 } from "./wavDecoder.js";
 
 const execFileAsync = util.promisify(execFile);
 
-// UI language codes (sourceLang/targetLang from Dashboard.jsx) mapped to what
-// Whisper and NLLB-200 each expect.
 const LANG_MAP = {
-  en: { whisper: "english", nllb: "eng_Latn" },
-  vi: { whisper: "vietnamese", nllb: "vie_Latn" },
-  zh: { whisper: "chinese", nllb: "zho_Hans" },
+  en: "english",
+  vi: "vietnamese",
+  zh: "chinese",
 };
 
-// Lazy singletons so the (large) models are only loaded once per app run,
-// not once per export.
 let asrPipelinePromise = null;
-let translationPipelinePromise = null;
 
 function getAsrPipeline(onModelProgress) {
   if (!asrPipelinePromise) {
-    // Keep inference small enough to run reliably inside Electron's main process.
+    // Dùng whisper-small để nhận diện giọng nói tiếng Việt chuẩn xác
     asrPipelinePromise = pipeline(
       "automatic-speech-recognition",
-      "Xenova/whisper-tiny",
+      "Xenova/whisper-small",
       {
         quantized: true,
         progress_callback: onModelProgress,
@@ -49,20 +34,6 @@ function getAsrPipeline(onModelProgress) {
     );
   }
   return asrPipelinePromise;
-}
-
-function getTranslationPipeline(onModelProgress) {
-  if (!translationPipelinePromise) {
-    translationPipelinePromise = pipeline(
-      "translation",
-      "Xenova/nllb-200-distilled-600M",
-      {
-        quantized: true,
-        progress_callback: onModelProgress,
-      },
-    );
-  }
-  return translationPipelinePromise;
 }
 
 /** Extract mono 16kHz PCM WAV audio from the source video via ffmpeg. */
@@ -83,10 +54,7 @@ async function extractAudio(ffmpegBin, inputPath, outputWavPath) {
   return outputWavPath;
 }
 
-/**
- * Transcribe audio into timestamped chunks using local Whisper.
- * Returns: [{ text, timestamp: [startSec, endSec|null] }, ...]
- */
+/** Transcribe audio using Whisper */
 async function transcribeAudio(wavPath, sourceLang, onProgress) {
   const transcriber = await getAsrPipeline((p) =>
     onProgress?.({ stage: "loading-model", model: "whisper", ...p }),
@@ -102,8 +70,8 @@ async function transcribeAudio(wavPath, sourceLang, onProgress) {
     callback_function: () => onProgress?.({ stage: "transcribing" }),
   };
 
-  if (sourceLang !== "auto") {
-    transcriptionOptions.language = LANG_MAP[sourceLang]?.whisper;
+  if (sourceLang !== "auto" && LANG_MAP[sourceLang]) {
+    transcriptionOptions.language = LANG_MAP[sourceLang];
   }
 
   const result = await transcriber(audioData, transcriptionOptions);
@@ -114,25 +82,29 @@ async function transcribeAudio(wavPath, sourceLang, onProgress) {
   return [{ text: result.text, timestamp: [0, null] }];
 }
 
-/** Translate each subtitle segment's text with local NLLB-200. */
+/** Dịch nhanh qua Google Translate Endpoint công khai */
+async function translateText(text, from, to) {
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${from}&tl=${to}&dt=t&q=${encodeURIComponent(text)}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    return data[0]?.map((item) => item[0]).join("") || text;
+  } catch (err) {
+    return text; // Giữ nguyên text nếu mất mạng
+  }
+}
+
 async function translateSegments(segments, sourceLang, targetLang, onProgress) {
   if (sourceLang === targetLang) return segments;
 
-  const translator = await getTranslationPipeline((p) =>
-    onProgress?.({ stage: "loading-model", model: "nllb", ...p }),
-  );
-
-  const srcNllb = LANG_MAP[sourceLang]?.nllb || "eng_Latn";
-  const tgtNllb = LANG_MAP[targetLang]?.nllb || "vie_Latn";
+  const src = sourceLang === "auto" ? "auto" : sourceLang;
+  const tgt = targetLang;
 
   const translated = [];
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
-    const out = await translator(seg.text, {
-      src_lang: srcNllb,
-      tgt_lang: tgtNllb,
-    });
-    translated.push({ ...seg, text: out[0].translation_text });
+    const trans = await translateText(seg.text, src, tgt);
+    translated.push({ ...seg, text: trans });
     onProgress?.({
       stage: "translating",
       index: i + 1,
@@ -155,22 +127,12 @@ function segmentsToSrt(segments) {
   return segments
     .map((seg, i) => {
       const [start, end] = seg.timestamp;
-      const endSec = end != null ? end : start + 3; // pad last chunk if no end timestamp
+      const endSec = end != null ? end : start + 3;
       return `${i + 1}\n${toSrtTimestamp(start)} --> ${toSrtTimestamp(endSec)}\n${seg.text.trim()}\n`;
     })
     .join("\n");
 }
 
-/**
- * Full pipeline: video -> real .srt file (translated if needed).
- *
- * @param {string} ffmpegBin - path to the ffmpeg binary you already resolve in main.js
- * @param {string} inputPath - path to the source video
- * @param {string} sourceLang - 'auto' | 'en' | 'vi' | 'zh'
- * @param {string} targetLang - 'en' | 'vi' | 'zh'
- * @param {(data: object) => void} [onProgress] - forwarded to the renderer as 'subtitle-progress'
- * @returns {Promise<string>} path to the generated .srt file
- */
 export async function generateSubtitles({
   ffmpegBin,
   inputPath,
@@ -186,20 +148,11 @@ export async function generateSubtitles({
     await extractAudio(ffmpegBin, inputPath, wavPath);
 
     const rawSegments = await transcribeAudio(wavPath, sourceLang, onProgress);
-
-    // Free up disk space — audio isn't needed once transcribed.
     fs.unlinkSync(wavPath);
-
-    // Whisper transcribes in the spoken language; NLLB then translates that
-    // text to targetLang. When sourceLang is 'auto' we don't get a
-    // structured language code back from this pipeline, so we fall back to
-    // a sensible default for your 3-language UI (en/vi/zh).
-    const effectiveSourceLang =
-      sourceLang === "auto" ? (targetLang === "en" ? "vi" : "en") : sourceLang;
 
     const finalSegments = await translateSegments(
       rawSegments,
-      effectiveSourceLang,
+      sourceLang,
       targetLang,
       onProgress,
     );
