@@ -26,8 +26,9 @@ jobs:
         with:
           node-version: 22
 
+      # Ép npm cài đặt lại từ đầu dựa trên package.json, bỏ qua lockfile để tải đúng binary của từng hệ điều hành
       - name: Install Dependencies
-        run: npm install --include=optional
+        run: npm install --no-package-lock
 
       # Build cho Windows
       - name: Build & Package Windows
