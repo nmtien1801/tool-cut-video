@@ -3,13 +3,14 @@ name: Build and Release Electron App
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
 
 jobs:
   release:
     runs-on: ${{ matrix.os }}
 
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
 
@@ -21,7 +22,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: "npm"
+          cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
@@ -35,7 +36,7 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=4096
           VITE_BACKEND_URL: http://161.248.4.175:8081/api
 
-      # Build cho macOS (Tắt bắt buộc Apple Code Signing)
+      # Build cho macOS (Tắt hoàn toàn Code Signing)
       - name: Build & Package macOS
         if: matrix.os == 'macos-latest'
         run: npm run dist:mac

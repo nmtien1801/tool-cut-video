@@ -51,7 +51,8 @@
       ],
       "artifactName": "${productName}-Mac-${version}-${arch}.${ext}",
       "category": "public.app-category.video",
-      "hardenedRuntime": true,
+      "identity": null,
+      "hardenedRuntime": false,
       "gatekeeperAssess": false
     },
     "nsis": {
