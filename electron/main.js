@@ -28,7 +28,7 @@ ffmpeg.setFfmpegPath(fixPathForAsar(ffmpegPath));
 ffmpeg.setFfprobePath(fixPathForAsar(ffprobePath));
 
 // ─────────────────────────────────────────────
-// 1. XÁC ĐỊNH ĐƯỜNG DẪN THƯ MỤC CHỨA FONT ANTON (Khai báo trước)
+// 1. XÁC ĐỊNH ĐƯỜNG DẪN THƯ MỤC CHỨA FONT
 // ─────────────────────────────────────────────
 const resolveFontsDir = () => {
   const devPublic = path.join(__dirname, "../public");
@@ -44,7 +44,7 @@ const resolveFontsDir = () => {
 const fontsDir = resolveFontsDir();
 
 // ─────────────────────────────────────────────
-// 2. TẠO CẤU HÌNH FONTCONFIG CHO FFmpeg (Khai báo sau fontsDir)
+// 2. TẠO CẤU HÌNH FONTCONFIG CHO FFmpeg
 // ─────────────────────────────────────────────
 const setupFontConfig = () => {
   if (!fontsDir || !fs.existsSync(fontsDir)) return null;
@@ -169,7 +169,7 @@ const HW_CANDIDATES = [
   },
 ];
 
-// --- HÀM HỖ TRỢ XỬ LÝ THỜI GIAN PHỤ ĐỀ ---
+// --- HÀM HỖ TRỢ XỬ LÝ THỜI GIAN & ĐỘ PHÂN GIẢI ---
 const timeStringToSeconds = (timeStr) => {
   if (!timeStr) return 0;
   const [hms, ms] = timeStr.split(",");
@@ -191,16 +191,34 @@ const secondsToTimeString = (totalSeconds) => {
   return `${hh}:${mm}:${ss},${ms}`;
 };
 
-// Hàm chia nhỏ và ngắt tối đa 2 dòng cho mỗi đoạn phụ đề
-const splitSubIntoChunks = (sub, maxWordsPerChunk = 6) => {
+const getVideoDimensions = (filePath) => {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
+      if (err || !metadata?.streams) {
+        return resolve({ width: 1920, height: 1080 });
+      }
+      const videoStream = metadata.streams.find(
+        (s) => s.codec_type === "video",
+      );
+      resolve({
+        width: videoStream?.width || 1920,
+        height: videoStream?.height || 1080,
+      });
+    });
+  });
+};
+
+// Hàm chia phụ đề: tự bẻ đôi dòng và giới hạn thời gian hiển thị hợp lý
+const splitSubIntoChunks = (sub, maxWordsPerChunk = 12) => {
   const text = (sub.text || "").replace(/\s+/g, " ").trim();
   const words = text.split(" ").filter(Boolean);
 
   if (words.length === 0) return [];
 
-  // Tách 2 dòng: nếu <= 3 từ thì 1 dòng, > 3 từ thì chia đôi
+  const splitThreshold = Math.ceil(maxWordsPerChunk / 2);
+
   const formatLines = (wordArr) => {
-    if (wordArr.length <= 3) {
+    if (wordArr.length <= splitThreshold) {
       return wordArr.join(" ");
     }
     const mid = Math.ceil(wordArr.length / 2);
@@ -221,11 +239,13 @@ const splitSubIntoChunks = (sub, maxWordsPerChunk = 6) => {
     chunks.push(formatLines(chunkWords));
   }
 
-  const timePerChunk = totalDuration / chunks.length;
+  const calculatedTimePerChunk = totalDuration / chunks.length;
+  // Mỗi câu ngắn tối đa chỉ nên hiển thị 3.2s tránh tình trạng sub đứng đơ khi video dài
+  const timePerChunk = Math.min(calculatedTimePerChunk, 3.2);
 
   return chunks.map((chunkText, index) => {
     const chunkStart = startSec + index * timePerChunk;
-    const chunkEnd = chunkStart + timePerChunk;
+    const chunkEnd = Math.min(chunkStart + timePerChunk, endSec);
     return {
       id: `${sub.id}_${index}`,
       text: chunkText,
@@ -235,11 +255,16 @@ const splitSubIntoChunks = (sub, maxWordsPerChunk = 6) => {
   });
 };
 
-const generateSegmentSrt = (rawSegments, segStartTime, segDuration) => {
+const generateSegmentSrt = (
+  rawSegments,
+  segStartTime,
+  segDuration,
+  maxWords = 12,
+) => {
   const segEndSec = segStartTime + segDuration;
 
   const flattenedSubs = rawSegments.flatMap((sub) =>
-    splitSubIntoChunks(sub, 6),
+    splitSubIntoChunks(sub, maxWords),
   );
 
   const filteredSubs = flattenedSubs
@@ -457,7 +482,7 @@ ipcMain.handle("get-video-duration", async (event, inputPath) => {
   });
 });
 
-// CẮT VIDEO GỐC
+// CẮT VIDEO GỐC (Tự động thích ứng kích thước video thực tế)
 ipcMain.handle(
   "trim-multiple-segments",
   async (event, { inputPath, segments, subtitles }) => {
@@ -472,6 +497,24 @@ ipcMain.handle(
 
       const encoder = await detectHwEncoder();
       const isGpu = encoder !== "libx264";
+
+      // Kiểm tra kích thước video gốc để tính styling phụ đề
+      const { width: origW, height: origH } =
+        await getVideoDimensions(inputPath);
+      const isVertical = origW < origH;
+
+      // Video dọc nhỏ (720x1280): 6 từ/câu, Font 18, lề hẹp
+      // Video ngang (1920x1080 / 1280x720): 12 từ/câu, Font 22-26, lề rộng
+      const maxWords = isVertical ? 6 : 12;
+      const fontSize = isVertical
+        ? origW <= 720
+          ? 18
+          : 20
+        : origW >= 1920
+          ? 22
+          : 20;
+      const marginV = isVertical ? 12 : 10;
+      const marginH = isVertical ? 15 : 80;
 
       const merger = new ProgressMerger(segments, (pct, eta) => {
         mainWindow.webContents.send("trim-progress", { percent: pct, eta });
@@ -489,6 +532,7 @@ ipcMain.handle(
             subtitles.rawSegments,
             seg.startTime,
             seg.duration,
+            maxWords,
           );
           if (srtContent.trim() !== "") {
             srtPath = path.join(
@@ -515,13 +559,13 @@ ipcMain.handle(
           let lastLayer = "[base_v]";
 
           if (subtitles.exportGreenScreen) {
-            filterComplex += `color=c=0x2b6cb0:s=1920x220,format=yuva420p,geq=r='r(X,Y)':a='240*pow(Y/H,1.2)'[grad];`;
-            filterComplex += `[base_v][grad]overlay=0:H-220:shortest=1[with_bg];`;
+            const gradH = Math.floor(origH * 0.18);
+            filterComplex += `color=c=0x2b6cb0:s=${origW}x${gradH},format=yuva420p,geq=r='r(X,Y)':a='240*pow(Y/H,1.2)'[grad];`;
+            filterComplex += `[base_v][grad]overlay=0:H-${gradH}:shortest=1[with_bg];`;
             lastLayer = "[with_bg]";
           }
 
-          // Cấu hình Fontname=Anton thuần túy, không chèn :fontsdir
-          filterComplex += `${lastLayer}subtitles=${escapedSrtPath}:force_style='Fontname=Anton,FontSize=16,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Alignment=2,MarginV=12,MarginL=30,MarginR=30'[outv]`;
+          filterComplex += `${lastLayer}subtitles=${escapedSrtPath}:force_style='Fontname=Anton,FontSize=${fontSize},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.5,Alignment=2,MarginV=${marginV},MarginL=${marginH},MarginR=${marginH}'[outv]`;
 
           args.push(
             "-filter_complex",
@@ -578,11 +622,12 @@ ipcMain.handle(
     try {
       const encoder = await detectHwEncoder();
       const isGpu = encoder !== "libx264";
-      const outW = aspectRatio === "9:16" ? 1080 : 1920;
-      const outH = aspectRatio === "9:16" ? 1920 : 1080;
+      const isTargetVertical = aspectRatio === "9:16";
+      const outW = isTargetVertical ? 1080 : 1920;
+      const outH = isTargetVertical ? 1920 : 1080;
       const gradH = Math.floor(outH * 0.18);
       const inputResolved = path.resolve(inputPath);
-      const ratioTag = aspectRatio === "9:16" ? "9x16" : "16x9";
+      const ratioTag = isTargetVertical ? "9x16" : "16x9";
       const outputFolder = path.join(
         os.homedir(),
         "Downloads",
@@ -602,6 +647,12 @@ ipcMain.handle(
       const bgW = Math.floor(outW / 4),
         bgH = Math.floor(outH / 4);
 
+      // Cấu hình tham số theo tỉ lệ xuất
+      const maxWords = isTargetVertical ? 6 : 12;
+      const fontSize = isTargetVertical ? 18 : 20;
+      const marginV = isTargetVertical ? 12 : 10;
+      const marginH = isTargetVertical ? 16 : 80;
+
       const merger = new ProgressMerger(segments, (pct, eta) => {
         mainWindow.webContents.send("export-progress", { percent: pct, eta });
       });
@@ -618,6 +669,7 @@ ipcMain.handle(
             subtitles.rawSegments,
             seg.startTime,
             seg.duration,
+            maxWords,
           );
           if (srtContent.trim() !== "") {
             srtPath = path.join(
@@ -645,10 +697,7 @@ ipcMain.handle(
             overlayInput = "[with_bg]";
           }
 
-          const fontSize = aspectRatio === "9:16" ? 18 : 20;
-
-          // Cấu hình Fontname=Anton
-          filterComplex += `;${overlayInput}subtitles=${escapedSrtPath}:force_style='Fontname=Anton,FontSize=${fontSize},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.5,Alignment=2,MarginV=15,MarginL=40,MarginR=40'[out_sub]`;
+          filterComplex += `;${overlayInput}subtitles=${escapedSrtPath}:force_style='Fontname=Anton,FontSize=${fontSize},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.5,Alignment=2,MarginV=${marginV},MarginL=${marginH},MarginR=${marginH}'[out_sub]`;
           finalMap = "[out_sub]";
         }
 
