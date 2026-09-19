@@ -210,9 +210,6 @@ function Dashboard() {
     <div className="min-h-screen bg-slate-900 text-white p-8 font-sans">
       <div className="max-w-6xl mx-auto flex items-center mb-10">
         <h1 className="text-3xl font-black text-blue-500 mr-auto">CUT VIDEO PRO</h1>
-        <div className="mr-4 px-4 py-1.5 rounded-lg border bg-slate-800 border-slate-700 text-slate-400 text-xs font-bold">
-          TỰ ĐỘNG TỐI ƯU ENCODER
-        </div>
         <button onClick={() => { logout(); navigate('/login'); }} className="text-red-400 border border-red-500/50 px-4 py-1.5 rounded-lg hover:bg-red-500 hover:text-white transition-all">Đăng Xuất</button>
       </div>
 

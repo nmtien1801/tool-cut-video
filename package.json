@@ -57,6 +57,12 @@
     "directories": {
       "output": "release"
     },
+    "extraResources": [
+      {
+        "from": "public/anton.ttf",
+        "to": "public/anton.ttf"
+      }
+    ],
     "asar": true,
     "asarUnpack": [
       "**/node_modules/@xenova/transformers/**/*",
