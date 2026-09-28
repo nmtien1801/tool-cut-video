@@ -615,10 +615,13 @@ ipcMain.handle(
   },
 );
 
-// XUẤT VIDEO BLUR NỀN
+// XUẤT VIDEO BLUR NỀN HOẶC NỀN ĐEN
 ipcMain.handle(
   "export-with-aspect-ratio",
-  async (event, { inputPath, aspectRatio, segments, subtitles }) => {
+  async (
+    event,
+    { inputPath, aspectRatio, enableBlur = true, segments, subtitles },
+  ) => {
     try {
       const encoder = await detectHwEncoder();
       const isGpu = encoder !== "libx264";
@@ -681,11 +684,21 @@ ipcMain.handle(
           }
         }
 
-        let filterComplex =
-          `[0:v]split=2[bg_in][fg_in];` +
-          `[bg_in]scale=${bgW}:${bgH}:force_original_aspect_ratio=increase,crop=${bgW}:${bgH},boxblur=10:5,scale=${outW}:${outH}[bg_blur];` +
-          `[fg_in]scale=${outW}:${outH}:force_original_aspect_ratio=decrease[fg_scaled];` +
-          `[bg_blur][fg_scaled]overlay=(W-w)/2:(H-h)/2[out_base]`;
+        // ==========================================
+        // KHÁC NHAU Ở ĐÂY: XỬ LÝ THEO CỜ enableBlur
+        // ==========================================
+        let filterComplex = "";
+        if (enableBlur) {
+          // Bật làm mờ nền 2 bên / trên dưới
+          filterComplex =
+            `[0:v]split=2[bg_in][fg_in];` +
+            `[bg_in]scale=${bgW}:${bgH}:force_original_aspect_ratio=increase,crop=${bgW}:${bgH},boxblur=10:5,scale=${outW}:${outH}[bg_blur];` +
+            `[fg_in]scale=${outW}:${outH}:force_original_aspect_ratio=decrease[fg_scaled];` +
+            `[bg_blur][fg_scaled]overlay=(W-w)/2:(H-h)/2[out_base]`;
+        } else {
+          // Tắt làm mờ -> Giữ tỉ lệ chuẩn và thêm viền đen (pad)
+          filterComplex = `[0:v]scale=${outW}:${outH}:force_original_aspect_ratio=decrease,pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2:black[out_base]`;
+        }
 
         let finalMap = "[out_base]";
 

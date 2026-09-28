@@ -38,6 +38,7 @@ function Dashboard() {
   const [etaSeconds, setEtaSeconds] = useState(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState(null);
   const [aspectRatio, setAspectRatio] = useState('original');
+  const [enableBlurBg, setEnableBlurBg] = useState(true); // Cờ bật/tắt làm mờ nền
 
   // --- Cấu hình tự động phiên dịch ---
   const [enableAutoSub, setEnableAutoSub] = useState(false);
@@ -174,10 +175,11 @@ function Dashboard() {
     const payload = {
       inputPath: selectedFile.filePath,
       aspectRatio,
+      enableBlur: enableBlurBg, // Truyền cờ bật/tắt làm mờ nền xuống Backend
       segments,
       subtitles: {
         enabled: enableAutoSub && subtitleSegments.length > 0,
-        rawSegments: subtitleSegments, // <-- THAY ĐỔI Ở ĐÂY
+        rawSegments: subtitleSegments,
         exportGreenScreen: enableSubtitleBg
       }
     };
@@ -267,6 +269,19 @@ function Dashboard() {
                 </button>
               ))}
             </div>
+
+            {/* NÚT LUÔN HIỂN THỊ DƯỚI 3 NÚT TỈ LỆ */}
+            <label className="flex items-center space-x-2.5 bg-slate-900/50 p-3 rounded-xl border border-slate-700/60 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={enableBlurBg}
+                onChange={(e) => setEnableBlurBg(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500"
+              />
+              <span className="text-xs font-semibold text-slate-300">
+                Làm mờ nền khi đổi tỉ lệ (Bỏ chọn nếu muốn viền đen)
+              </span>
+            </label>
 
             <div className="flex items-center justify-between">
               <span className="text-sm font-bold text-slate-400 uppercase">Số đoạn:</span>
