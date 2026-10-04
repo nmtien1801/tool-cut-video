@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import '../index.css';
@@ -23,13 +23,124 @@ const parseSRT = (srtString) => {
   }).filter(sub => sub.id && sub.start);
 };
 
-const buildSRT = (subs) => {
-  return subs.map(sub => `${sub.id}\n${sub.start} --> ${sub.end}\n${sub.text}`).join('\n\n');
+// ==========================================
+// COMPONENT: KHUNG LƯỚI KÉO THẢ (PAN/CROP) - ĐÃ FIX LỖI HOOKS
+// ==========================================
+const CropGridOverlay = ({ aspectRatio, cropPosition, setCropPosition }) => {
+  const containerRef = useRef(null);
+  const [dim, setDim] = useState({ w: 0, h: 0 });
+  const isDragging = useRef(false);
+  const startPos = useRef({ x: 0, y: 0, crop: 50 });
+
+  // 1. Hook lấy kích thước
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      if (entries[0]) {
+        setDim({ w: entries[0].contentRect.width, h: entries[0].contentRect.height });
+      }
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  const isVertical = aspectRatio === '9:16';
+
+  // Tính toán kích thước và giới hạn trượt
+  let boxW = dim.w;
+  let boxH = dim.h;
+
+  if (isVertical) {
+    boxW = dim.h * (9 / 16);
+    if (boxW > dim.w) boxW = dim.w;
+  } else {
+    boxH = dim.w * (9 / 16);
+    if (boxH > dim.h) boxH = dim.h;
+  }
+
+  const movableRangeX = Math.max(0, dim.w - boxW);
+  const movableRangeY = Math.max(0, dim.h - boxH);
+
+  // 2. Hook đăng ký event global (Phải đưa lên TRƯỚC lệnh return sớm)
+  useEffect(() => {
+    const handleMove = (clientX, clientY) => {
+      if (!isDragging.current) return;
+      const dx = clientX - startPos.current.x;
+      const dy = clientY - startPos.current.y;
+
+      if (isVertical && movableRangeX > 0) {
+        const percent = (dx / movableRangeX) * 100;
+        setCropPosition(Math.max(0, Math.min(100, startPos.current.crop + percent)));
+      } else if (!isVertical && movableRangeY > 0) {
+        const percent = (dy / movableRangeY) * 100;
+        setCropPosition(Math.max(0, Math.min(100, startPos.current.crop + percent)));
+      }
+    };
+
+    const handleUp = () => { isDragging.current = false; };
+
+    const onMouseMove = (e) => handleMove(e.clientX, e.clientY);
+    const onTouchMove = (e) => handleMove(e.touches[0].clientX, e.touches[0].clientY);
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('touchmove', onTouchMove, { passive: false });
+    document.addEventListener('mouseup', handleUp);
+    document.addEventListener('touchend', handleUp);
+
+    return () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('touchmove', onTouchMove);
+      document.removeEventListener('mouseup', handleUp);
+      document.removeEventListener('touchend', handleUp);
+    };
+  }, [dim, isVertical, movableRangeX, movableRangeY, setCropPosition]);
+
+  // 3. LỆNH RETURN SỚM ĐƯỢC ĐƯA XUỐNG DƯỚI CÙNG (Sau khi đã gọi hết Hooks)
+  if (!dim.w || !dim.h) {
+    return <div ref={containerRef} className="absolute inset-0 pointer-events-none" />;
+  }
+
+  const left = isVertical ? (cropPosition / 100) * movableRangeX : 0;
+  const top = !isVertical ? (cropPosition / 100) * movableRangeY : 0;
+
+  const handleDown = (clientX, clientY) => {
+    isDragging.current = true;
+    startPos.current = { x: clientX, y: clientY, crop: cropPosition };
+  };
+
+  return (
+    <div ref={containerRef} className="absolute inset-0 overflow-hidden pointer-events-none rounded-xl">
+      <div
+        className="absolute border-2 border-yellow-400 pointer-events-auto cursor-grab active:cursor-grabbing flex flex-col justify-between"
+        style={{
+          width: boxW, height: boxH, left, top,
+          boxShadow: '0 0 0 9999px rgba(0,0,0,0.65)',
+          touchAction: 'none'
+        }}
+        onMouseDown={(e) => handleDown(e.clientX, e.clientY)}
+        onTouchStart={(e) => handleDown(e.touches[0].clientX, e.touches[0].clientY)}
+      >
+        <div className="absolute inset-0 flex justify-evenly pointer-events-none">
+          <div className="w-px h-full bg-white/40" />
+          <div className="w-px h-full bg-white/40" />
+        </div>
+        <div className="absolute inset-0 flex flex-col justify-evenly pointer-events-none">
+          <div className="h-px w-full bg-white/40" />
+          <div className="h-px w-full bg-white/40" />
+        </div>
+      </div>
+    </div>
+  );
 };
 
+
+// ==========================================
+// DASHBOARD MAIN
+// ==========================================
 function Dashboard() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [videoDuration, setVideoDuration] = useState(0);
+  const [videoMeta, setVideoMeta] = useState({ w: 0, h: 0 }); // Lưu kích thước video thực tế
   const [segmentCount, setSegmentCount] = useState(2);
   const [segments, setSegments] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -38,19 +149,22 @@ function Dashboard() {
   const [etaSeconds, setEtaSeconds] = useState(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState(null);
   const [aspectRatio, setAspectRatio] = useState('original');
-  const [enableBlurBg, setEnableBlurBg] = useState(true); // Cờ bật/tắt làm mờ nền
+  const [enableBlurBg, setEnableBlurBg] = useState(true);
 
-  // --- Cấu hình tự động phiên dịch ---
+  // Tọa độ Crop (%)
+  const [cropPosition, setCropPosition] = useState(50);
+
+  // Cấu hình tự động phiên dịch
   const [enableAutoSub, setEnableAutoSub] = useState(false);
   const [sourceLang, setSourceLang] = useState('vi');
   const [targetLang, setTargetLang] = useState('vi');
   const [enableSubtitleBg, setEnableSubtitleBg] = useState(true);
 
-  // --- Trạng thái Phụ đề chỉnh sửa ---
+  // Trạng thái Phụ đề chỉnh sửa
   const [subtitleStage, setSubtitleStage] = useState(null);
   const [subtitleDetail, setSubtitleDetail] = useState('');
   const [generatingSub, setGeneratingSub] = useState(false);
-  const [subtitleSegments, setSubtitleSegments] = useState([]); // Chứa mảng data phụ đề để sửa
+  const [subtitleSegments, setSubtitleSegments] = useState([]);
 
   const navigate = useNavigate();
   const { logout } = useAuth();
@@ -84,7 +198,7 @@ function Dashboard() {
 
   const handleSelectFile = async () => {
     setLoading(true);
-    setSubtitleSegments([]); // Reset sub khi chọn file mới
+    setSubtitleSegments([]);
     try {
       const res = await window.electron.selectVideo();
       if (res?.success) {
@@ -130,7 +244,6 @@ function Dashboard() {
     return new Date(s * 1000).toISOString().substr(11, 8);
   };
 
-  // --- HÀM TẠO PHỤ ĐỀ (BƯỚC 1) ---
   const handleGenerateSubtitles = async () => {
     if (!selectedFile) return;
     setGeneratingSub(true);
@@ -158,12 +271,10 @@ function Dashboard() {
     }
   };
 
-  // --- HÀM CẬP NHẬT TEXT PHỤ ĐỀ ---
   const handleSubtitleTextChange = (id, newText) => {
     setSubtitleSegments(prev => prev.map(sub => sub.id === id ? { ...sub, text: newText } : sub));
   };
 
-  // --- HÀM XUẤT VIDEO (BƯỚC 2) ---
   const handleAction = async () => {
     if (!selectedFile || processing) return;
 
@@ -171,11 +282,11 @@ function Dashboard() {
     setProgress(0);
     setEtaSeconds(null);
 
-    // Truyền nguyên mảng dữ liệu phụ đề thô (chưa ghép thành chuỗi) xuống Backend
     const payload = {
       inputPath: selectedFile.filePath,
       aspectRatio,
-      enableBlur: enableBlurBg, // Truyền cờ bật/tắt làm mờ nền xuống Backend
+      enableBlur: enableBlurBg,
+      cropPosition: parseInt(cropPosition),
       segments,
       subtitles: {
         enabled: enableAutoSub && subtitleSegments.length > 0,
@@ -191,7 +302,6 @@ function Dashboard() {
     alert(res.message);
     setProcessing(false);
 
-    // --- RESET DỮ LIỆU KHI XUẤT THÀNH CÔNG ---
     if (res.success) {
       setSelectedFile(null);
       setVideoPreviewUrl(null);
@@ -208,15 +318,25 @@ function Dashboard() {
   const totalSegDuration = segments.reduce((sum, s) => sum + (s.duration || 0), 0);
   const isOverDuration = totalSegDuration > videoDuration;
 
+  // Tính toán giới hạn khung chứa video để Overlay phủ vừa khít
+  const maxVideoHeight = 320;
+  const containerStyle = {
+    aspectRatio: videoMeta.w && videoMeta.h ? `${videoMeta.w}/${videoMeta.h}` : '16/9',
+    maxHeight: `${maxVideoHeight}px`,
+    width: '100%',
+    maxWidth: videoMeta.w && videoMeta.h ? `${maxVideoHeight * (videoMeta.w / videoMeta.h)}px` : '100%'
+  };
+
   return (
     <div className="min-h-screen bg-slate-900 text-white p-8 font-sans">
       <div className="max-w-6xl mx-auto flex items-center mb-10">
-        <h1 className="text-3xl font-black text-blue-500 mr-auto">CUT VIDEO PRO</h1>
+        <h1 className="text-3xl font-black text-blue-500 mr-auto">CUT VIDEO</h1>
         <button onClick={() => { logout(); navigate('/login'); }} className="text-red-400 border border-red-500/50 px-4 py-1.5 rounded-lg hover:bg-red-500 hover:text-white transition-all">Đăng Xuất</button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 max-w-6xl mx-auto">
-        {/* CỘT TRÁI - PREVIEW & FILE */}
+
+        {/* ===================== CỘT TRÁI ===================== */}
         <div className="space-y-6">
           <button onClick={handleSelectFile} disabled={processing || loading || generatingSub} className="w-full py-12 border-2 border-dashed border-slate-700 rounded-2xl hover:border-blue-500 text-slate-500 font-bold disabled:opacity-50">
             {loading ? 'ĐANG ĐỌC VIDEO...' : selectedFile ? `✅ ${selectedFile.fileName}` : '📁 CHỌN VIDEO ĐẦU VÀO'}
@@ -224,7 +344,27 @@ function Dashboard() {
 
           {selectedFile && (
             <div className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700 shadow-xl">
-              <video src={videoPreviewUrl} controls className="w-full rounded-xl bg-black mb-4" style={{ maxHeight: '320px' }} />
+
+              {/* KHUNG VIDEO VÀ OVERLAY KÉO THẢ */}
+              <div className="flex justify-center bg-black rounded-xl mb-4 p-2">
+                <div className="relative flex justify-center items-center" style={containerStyle}>
+                  <video
+                    src={videoPreviewUrl}
+                    controls={aspectRatio === 'original'} // Ẩn control để dễ kéo thả khung
+                    className="w-full h-full object-contain"
+                    onLoadedMetadata={(e) => setVideoMeta({ w: e.target.videoWidth, h: e.target.videoHeight })}
+                  />
+                  {/* Hiển thị khung cắt nếu khác tỉ lệ gốc */}
+                  {aspectRatio !== 'original' && (
+                    <CropGridOverlay
+                      aspectRatio={aspectRatio}
+                      cropPosition={cropPosition}
+                      setCropPosition={setCropPosition}
+                    />
+                  )}
+                </div>
+              </div>
+
               <div className="flex justify-between text-sm font-mono text-slate-400">
                 <span>THỜI LƯỢNG GỐC:</span>
                 <span className="text-blue-400">{formatTime(videoDuration)}</span>
@@ -232,7 +372,7 @@ function Dashboard() {
             </div>
           )}
 
-          {/* EDITOR SỬA PHỤ ĐỀ BẰNG TAY (Hiển thị khi đã tạo xong) */}
+          {/* EDITOR SỬA PHỤ ĐỀ */}
           {enableAutoSub && subtitleSegments.length > 0 && (
             <div className="bg-slate-800/50 p-4 rounded-2xl border border-blue-500/30 flex flex-col h-96">
               <h3 className="text-sm font-bold text-blue-400 mb-3 flex items-center justify-between">
@@ -259,18 +399,27 @@ function Dashboard() {
           )}
         </div>
 
-        {/* CỘT PHẢI - CẤU HÌNH & XUẤT */}
+        {/* ===================== CỘT PHẢI ===================== */}
         <div className="space-y-6">
           <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 space-y-6">
+
             <div className="grid grid-cols-3 gap-3">
               {['original', '16:9', '9:16'].map(r => (
-                <button key={r} onClick={() => setAspectRatio(r)} className={`p-3 rounded-xl border-2 transition-all ${aspectRatio === r ? 'border-blue-500 bg-blue-500/10 text-blue-400' : 'border-slate-700 text-slate-500'}`}>
+                <button key={r} onClick={() => { setAspectRatio(r); setCropPosition(50); }} className={`p-3 rounded-xl border-2 transition-all ${aspectRatio === r ? 'border-blue-500 bg-blue-500/10 text-blue-400' : 'border-slate-700 text-slate-500'}`}>
                   <div className="font-bold uppercase text-xs">{r === 'original' ? 'Gốc (Cắt)' : r}</div>
                 </button>
               ))}
             </div>
 
-            {/* NÚT LUÔN HIỂN THỊ DƯỚI 3 NÚT TỈ LỆ */}
+            {/* Thông báo hướng dẫn thay cho thanh kéo slider */}
+            {aspectRatio !== 'original' && (
+              <div className="bg-slate-900/50 p-3 rounded-xl border border-yellow-500/30">
+                <p className="text-xs text-yellow-400/80 font-medium text-center">
+                  ☝️ Hãy dùng chuột kéo khung lưới màu vàng trên Video để chọn góc cần xuất.
+                </p>
+              </div>
+            )}
+
             <label className="flex items-center space-x-2.5 bg-slate-900/50 p-3 rounded-xl border border-slate-700/60 cursor-pointer">
               <input
                 type="checkbox"
@@ -279,7 +428,7 @@ function Dashboard() {
                 className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500"
               />
               <span className="text-xs font-semibold text-slate-300">
-                Làm mờ nền khi đổi tỉ lệ (Bỏ chọn nếu muốn viền đen)
+                Làm mờ nền khi đổi tỉ lệ (Bỏ chọn nếu muốn nền đen)
               </span>
             </label>
 
@@ -297,7 +446,7 @@ function Dashboard() {
               ))}
             </div>
 
-            {/* --- Cấu hình phụ đề / Auto-translate --- */}
+            {/* Cấu hình phụ đề */}
             <div className="space-y-3 pt-4 border-t border-slate-700">
               <label className="flex items-center space-x-3 cursor-pointer">
                 <input
